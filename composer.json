@@ -1,0 +1,52 @@
+{
+    "name": "bedriox/raknet",
+    "description": "A standalone RakNet transport library for Bedriox and other PHP applications.",
+    "type": "library",
+    "license": "GPL-3.0-only",
+    "homepage": "https://bedriox.com",
+    "authors": [
+        {
+            "name": "Veno Ninja LLC",
+            "homepage": "https://bedriox.com"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/Bedriox/RakNet/issues",
+        "source": "https://github.com/Bedriox/RakNet"
+    },
+    "require": {
+        "php": "^8.4",
+        "ext-sockets": "*"
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.75",
+        "phpstan/phpstan": "^2.1",
+        "phpunit/phpunit": "^11.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "Bedriox\\RakNet\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Bedriox\\RakNet\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "check": [
+            "@test",
+            "@analyse",
+            "@style"
+        ],
+        "test": "phpunit",
+        "analyse": "phpstan analyse --no-progress --memory-limit=1G",
+        "style": "php-cs-fixer check --diff --verbose"
+    },
+    "config": {
+        "allow-plugins": false,
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
