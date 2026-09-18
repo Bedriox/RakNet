@@ -40,7 +40,7 @@ $server->poll(); // handles at most 64 waiting datagrams without blocking
 $server->close();
 ```
 
-Call `poll()` frequently from an owning event loop. Its optional batch limit is constrained to `1..1024`. It returns the number of received datagrams inspected, including malformed datagrams. Calling `close()` repeatedly is safe; polling after close throws `TransportException`.
+Call `poll()` frequently from an owning event loop. Its optional batch limit is constrained to `1..1024`. It returns the number of received datagrams inspected, including malformed datagrams. On Windows, a late ICMP port-unreachable response for an earlier UDP send is cleared as a recoverable socket notification; it does not count as a received datagram or close the shared listener. Calling `close()` repeatedly is safe; polling after close throws `TransportException`.
 
 `DiscoveryStatus` treats the application payload as opaque. It requires valid UTF-8 and between 1 and 352 bytes but does not parse, sanitize, infer, or generate application fields. The application protocol owns its delimiters, text policy, versions, capacity values, and other semantics.
 

@@ -116,6 +116,33 @@ final class DiscoveryServerTest extends TestCase
         self::assertSame(778, $pong->timestamp);
     }
 
+    public function testClosedDiscoveryPeerDoesNotPoisonSharedSocketOnWindows(): void
+    {
+        if (PHP_OS_FAMILY !== 'Windows') {
+            self::markTestSkipped('Winsock reports late UDP port-unreachable responses through WSAECONNRESET.');
+        }
+
+        $this->startServer();
+        $abandonedClient = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+        if (!$abandonedClient instanceof Socket) {
+            self::fail('Unable to create abandoned loopback UDP client.');
+        }
+
+        $request = new UnconnectedPing(776, 122)->encode();
+        self::assertSame(
+            \strlen($request),
+            socket_sendto($abandonedClient, $request, \strlen($request), 0, '127.0.0.1', $this->server()->localPort()),
+        );
+        socket_close($abandonedClient);
+
+        self::assertSame(1, $this->awaitHandled(1));
+        usleep(10_000);
+        self::assertSame(0, $this->server()->poll());
+
+        $pong = $this->exchangePing(778, 124);
+        self::assertSame(778, $pong->timestamp);
+    }
+
     public function testPingOpenConnectionsReceivesPongWhenCapacityIsAvailable(): void
     {
         $this->startServer();

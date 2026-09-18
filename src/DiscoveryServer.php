@@ -304,7 +304,7 @@ final class DiscoveryServer
 
             if ($received === false) {
                 $error = socket_last_error($this->socket);
-                if ($error === SOCKET_EWOULDBLOCK) {
+                if ($error === SOCKET_EWOULDBLOCK || self::isRecoverableReceiveError($error)) {
                     socket_clear_error($this->socket);
                     break;
                 }
@@ -875,6 +875,11 @@ final class DiscoveryServer
         }
 
         return $address . ':' . $port;
+    }
+
+    private static function isRecoverableReceiveError(int $error): bool
+    {
+        return PHP_OS_FAMILY === 'Windows' && $error === SOCKET_ECONNRESET;
     }
 
     private function socketFailure(string $operation, ?int $error = null): TransportException

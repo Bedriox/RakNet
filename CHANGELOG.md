@@ -4,6 +4,10 @@ All notable changes to Bedriox/RakNet are documented here. The project follows [
 
 ## [Unreleased]
 
+### Fixed
+
+- Kept the shared Windows UDP listener alive when a late response to a closed peer reports `WSAECONNRESET`.
+
 ## [0.1.0-alpha.1] - 2026-09-17
 
 ### Added

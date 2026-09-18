@@ -24,4 +24,6 @@ Drain `drainHandshakeDiagnostics()` every event-loop turn when investigating adm
 
 If discovery itself fails, verify UDP firewall rules, ensure the configured address is local, and confirm no other process owns the port. Port `0` chooses an ephemeral port; query `DiscoveryServer::localPort()` to learn it.
 
+On Windows, a client can close its UDP endpoint before a delayed discovery response arrives. Winsock reports the resulting ICMP port-unreachable notification as `WSAECONNRESET` on a later receive. Bedriox/RakNet clears that endpoint-specific notification and keeps the shared listener available; other receive errors remain fatal transport failures.
+
 Application sends are intentionally rejected until `SessionOpenedEvent`. Drain lifecycle events on every event-loop turn. If the lifecycle queue fills, the responsible session is removed and a transport failure is surfaced; increase the bounded limit only after confirming the consumer drains promptly.
