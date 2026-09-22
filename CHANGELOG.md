@@ -4,6 +4,10 @@ All notable changes to Bedriox/RakNet are documented here. The project follows [
 
 ## [Unreleased]
 
+### Added
+
+- Established-session idle expiry with periodic connected pings; inactive peers no longer retain a player identity indefinitely.
+
 ### Fixed
 
 - Kept the shared Windows UDP listener alive when a late response to a closed peer reports `WSAECONNRESET`.

@@ -77,6 +77,8 @@ final class DiscoveryServer
         private readonly int $maximumSessions,
         private readonly int $maximumPendingHandshakes,
         private readonly int $handshakeTimeoutNanoseconds,
+        private readonly int $sessionIdleTimeoutNanoseconds,
+        private readonly int $sessionPingIntervalNanoseconds,
         private readonly int $rakNetProtocolVersion,
         private readonly Clock $clock,
         private readonly int $maximumReceivedPayloads,
@@ -141,6 +143,8 @@ final class DiscoveryServer
                 $config->maximumSessions,
                 $config->maximumPendingHandshakes,
                 $config->handshakeTimeoutMilliseconds * 1_000_000,
+                $config->sessionIdleTimeoutMilliseconds * 1_000_000,
+                $config->sessionPingIntervalMilliseconds * 1_000_000,
                 $rakNetProtocolVersion,
                 $clock ?? new SystemClock(),
                 $config->maximumReceivedPayloads,
@@ -391,7 +395,12 @@ final class DiscoveryServer
                 $deadline = $now > PHP_INT_MAX - $this->handshakeTimeoutNanoseconds
                     ? PHP_INT_MAX
                     : $now + $this->handshakeTimeoutNanoseconds;
-                $this->connectedControlSessions[$key] = new ConnectedControlSession($result->sessionAfterSend, $deadline);
+                $this->connectedControlSessions[$key] = new ConnectedControlSession(
+                    $result->sessionAfterSend,
+                    $deadline,
+                    $this->sessionIdleTimeoutNanoseconds,
+                    $this->sessionPingIntervalNanoseconds,
+                );
                 unset($this->pendingHandshakes[$key]);
             }
         }
@@ -572,13 +581,19 @@ final class DiscoveryServer
                 $diagnosticStage = $this->connectedHandshakeStage($control);
                 $timeoutReason = $control->tick($this->clock->nowNanoseconds());
                 if ($timeoutReason !== null) {
-                    $this->appendHandshakeDiagnosticFor(
-                        $key,
-                        ConnectedHandshakeRejectionReason::Timeout,
-                        stage: $diagnosticStage,
-                    );
+                    if ($timeoutReason === SessionCloseReason::HandshakeTimeout) {
+                        $this->appendHandshakeDiagnosticFor(
+                            $key,
+                            ConnectedHandshakeRejectionReason::Timeout,
+                            stage: $diagnosticStage,
+                        );
+                    }
                     $this->removeSessionByKey($key, $timeoutReason);
                     continue;
+                }
+                $ping = $control->heartbeatPayload($this->clock->nowNanoseconds());
+                if ($ping !== null) {
+                    $session->queuePayload($ping->payload, $ping->reliability, $ping->orderingChannel);
                 }
                 $this->flushPendingOutbound($key);
                 if (($this->pendingOutboundDatagrams[$key] ?? []) !== []) {

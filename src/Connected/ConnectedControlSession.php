@@ -24,13 +24,21 @@ final class ConnectedControlSession
     private ?int $requestTimestamp = null;
     private ?string $acceptedPayload = null;
     private bool $opened = false;
+    private ?int $lastInboundNanoseconds = null;
+    private ?int $nextPingNanoseconds = null;
 
     public function __construct(
         private readonly SessionInfo $session,
         private readonly int $deadlineNanoseconds,
+        private readonly int $idleTimeoutNanoseconds = 30_000_000_000,
+        private readonly int $pingIntervalNanoseconds = 5_000_000_000,
     ) {
         if ($this->deadlineNanoseconds < 0) {
             throw new LogicException('Connected-control deadline must be nonnegative.');
+        }
+        if ($this->idleTimeoutNanoseconds < 1_000_000_000 || $this->pingIntervalNanoseconds < 1_000_000_000
+            || $this->pingIntervalNanoseconds >= $this->idleTimeoutNanoseconds) {
+            throw new LogicException('Connected-control liveness intervals are invalid.');
         }
     }
 
@@ -62,8 +70,25 @@ final class ConnectedControlSession
 
             return SessionCloseReason::HandshakeTimeout;
         }
+        if ($this->isReady() && $this->lastInboundNanoseconds !== null
+            && $nowNanoseconds - $this->lastInboundNanoseconds >= $this->idleTimeoutNanoseconds) {
+            $this->state = ConnectedControlState::Closed;
+
+            return SessionCloseReason::IdleTimeout;
+        }
 
         return null;
+    }
+
+    public function heartbeatPayload(int $nowNanoseconds): ?ControlOutboundPayload
+    {
+        if (!$this->isReady() || $this->nextPingNanoseconds === null || $nowNanoseconds < $this->nextPingNanoseconds) {
+            return null;
+        }
+        $this->nextPingNanoseconds = $nowNanoseconds > PHP_INT_MAX - $this->pingIntervalNanoseconds
+            ? PHP_INT_MAX : $nowNanoseconds + $this->pingIntervalNanoseconds;
+
+        return new ControlOutboundPayload(new ConnectedPing(intdiv($nowNanoseconds, 1_000_000))->encode(), Reliability::Unreliable);
     }
 
     public function receive(string $payload, int $nowNanoseconds): ConnectedControlEffects
@@ -76,6 +101,9 @@ final class ConnectedControlSession
         }
         if ($payload === '') {
             throw new UnexpectedValueException('Empty connected payload closed the control session.');
+        }
+        if ($this->isReady()) {
+            $this->lastInboundNanoseconds = $nowNanoseconds;
         }
 
         $packetId = \ord($payload[0]);
@@ -102,7 +130,7 @@ final class ConnectedControlSession
             return $this->receiveConnectionRequest($payload, $nowNanoseconds);
         }
         if ($packetId === NewIncomingConnection::ID) {
-            return $this->receiveNewIncomingConnection();
+            return $this->receiveNewIncomingConnection($nowNanoseconds);
         }
         if ($packetId === ConnectionRequestAccepted::ID) {
             ConnectionRequestAccepted::decode($payload);
@@ -155,7 +183,7 @@ final class ConnectedControlSession
         ]);
     }
 
-    private function receiveNewIncomingConnection(): ConnectedControlEffects
+    private function receiveNewIncomingConnection(int $nowNanoseconds): ConnectedControlEffects
     {
         if ($this->state === ConnectedControlState::AwaitingConnectionRequest) {
             throw new UnexpectedValueException('New incoming connection arrived before connection request.');
@@ -165,6 +193,9 @@ final class ConnectedControlSession
         }
         $this->state = ConnectedControlState::Ready;
         $this->opened = true;
+        $this->lastInboundNanoseconds = $nowNanoseconds;
+        $this->nextPingNanoseconds = $nowNanoseconds > PHP_INT_MAX - $this->pingIntervalNanoseconds
+            ? PHP_INT_MAX : $nowNanoseconds + $this->pingIntervalNanoseconds;
 
         return new ConnectedControlEffects(becameReady: true);
     }

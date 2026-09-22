@@ -315,6 +315,33 @@ final class ConnectedDiscoveryServerTest extends TestCase
         self::assertFalse($this->server()->removeSession('127.0.0.1', $this->clientPort()));
     }
 
+    public function testSilentReadySessionTimesOutAndReleasesEndpoint(): void
+    {
+        $this->startServer(new TransportConfig(
+            bindAddress: '127.0.0.1',
+            port: 0,
+            sessionIdleTimeoutMilliseconds: 5_000,
+            sessionPingIntervalMilliseconds: 1_000,
+        ));
+        $this->handshake();
+        self::assertCount(1, $this->server()->drainSessionEvents());
+
+        $this->clock->advanceMilliseconds(1_000);
+        self::assertSame(0, $this->server()->poll());
+        self::assertIsString($this->findOutboundPayload(0x00));
+        self::assertSame(1, $this->server()->readySessionCount());
+
+        $this->clock->advanceMilliseconds(4_000);
+        self::assertSame(0, $this->server()->poll());
+        self::assertSame(0, $this->server()->readySessionCount());
+        self::assertSame(0, $this->server()->sessionCount());
+        $events = $this->server()->drainSessionEvents();
+        self::assertCount(1, $events);
+        self::assertInstanceOf(SessionClosedEvent::class, $events[0]);
+        self::assertSame(SessionCloseReason::IdleTimeout, $events[0]->reason);
+        self::assertSame([], $this->server()->drainHandshakeDiagnostics()->events);
+    }
+
     public function testLostAcceptanceIsReliablyRetransmittedAndRequestReplayIsBounded(): void
     {
         $this->startServer();

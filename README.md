@@ -34,6 +34,8 @@ use Bedriox\RakNet\TransportConfig;
 $config = new TransportConfig(port: 19132, maximumSessions: 512);
 ```
 
+Established sessions send a connected ping every five seconds and expire after 30 seconds without inbound activity. `sessionPingIntervalMilliseconds` and `sessionIdleTimeoutMilliseconds` on `TransportConfig` can be adjusted for a deployment's network conditions.
+
 Run a non-blocking discovery responder from an existing event loop:
 
 ```php

@@ -18,6 +18,8 @@ final readonly class TransportConfig
         public int $maximumSessions = 1_024,
         public int $maximumPendingHandshakes = 1_024,
         public int $handshakeTimeoutMilliseconds = 5_000,
+        public int $sessionIdleTimeoutMilliseconds = 30_000,
+        public int $sessionPingIntervalMilliseconds = 5_000,
         public int $maximumReceivedPayloads = 4_096,
         public int $maximumReceivedPayloadBytes = 2_097_152,
         public int $maximumPendingOutboundDatagrams = 4_096,
@@ -47,6 +49,12 @@ final readonly class TransportConfig
 
         if ($this->handshakeTimeoutMilliseconds < 100 || $this->handshakeTimeoutMilliseconds > 60_000) {
             throw new InvalidArgumentException('Handshake timeout must be between 100 and 60000 milliseconds.');
+        }
+        if ($this->sessionIdleTimeoutMilliseconds < 5_000 || $this->sessionIdleTimeoutMilliseconds > 300_000) {
+            throw new InvalidArgumentException('Session idle timeout must be between 5000 and 300000 milliseconds.');
+        }
+        if ($this->sessionPingIntervalMilliseconds < 1_000 || $this->sessionPingIntervalMilliseconds >= $this->sessionIdleTimeoutMilliseconds) {
+            throw new InvalidArgumentException('Session ping interval must be at least 1000 milliseconds and shorter than the idle timeout.');
         }
 
         if ($this->maximumReceivedPayloads < 1 || $this->maximumReceivedPayloads > 65_535) {
