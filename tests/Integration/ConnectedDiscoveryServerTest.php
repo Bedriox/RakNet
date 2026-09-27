@@ -18,6 +18,7 @@ use Bedriox\RakNet\Protocol\SequenceRange;
 use Bedriox\RakNet\SessionClosedEvent;
 use Bedriox\RakNet\SessionCloseReason;
 use Bedriox\RakNet\SessionOpenedEvent;
+use Bedriox\RakNet\SessionTransportFailureReason;
 use Bedriox\RakNet\Tests\MutableClock;
 use Bedriox\RakNet\TransportConfig;
 use PHPUnit\Framework\TestCase;
@@ -340,6 +341,39 @@ final class ConnectedDiscoveryServerTest extends TestCase
         self::assertInstanceOf(SessionClosedEvent::class, $events[0]);
         self::assertSame(SessionCloseReason::IdleTimeout, $events[0]->reason);
         self::assertSame([], $this->server()->drainHandshakeDiagnostics()->events);
+    }
+
+    public function testTickFailureIsIsolatedToTheSaturatedSession(): void
+    {
+        $this->startServer(new TransportConfig(
+            bindAddress: '127.0.0.1',
+            port: 0,
+            sessionIdleTimeoutMilliseconds: 10_000,
+            sessionPingIntervalMilliseconds: 1_000,
+        ));
+        $this->handshake();
+        self::assertCount(1, $this->server()->drainSessionEvents());
+
+        for ($queued = 0; $queued < 4_096; ++$queued) {
+            $this->server()->sendPayload(
+                '127.0.0.1',
+                $this->clientPort(),
+                'x',
+                Reliability::Unreliable,
+            );
+        }
+        $this->clock->advanceMilliseconds(1_000);
+
+        self::assertSame(0, $this->server()->poll());
+        self::assertSame(0, $this->server()->sessionCount());
+        $events = $this->server()->drainSessionEvents();
+        self::assertCount(1, $events);
+        self::assertInstanceOf(SessionClosedEvent::class, $events[0]);
+        self::assertSame(SessionCloseReason::TransportFailure, $events[0]->reason);
+        self::assertSame(SessionTransportFailureReason::OutboundFrameQueue, $events[0]->transportFailure);
+
+        $this->handshake(clientGuid: 778);
+        self::assertSame(1, $this->server()->readySessionCount());
     }
 
     public function testLostAcceptanceIsReliablyRetransmittedAndRequestReplayIsBounded(): void

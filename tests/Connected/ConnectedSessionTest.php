@@ -33,8 +33,10 @@ final class ConnectedSessionTest extends TestCase
 
         $sender->queuePayload('hello', Reliability::Reliable);
         $sender->tick();
-        $outbound = $sender->drainEffects()->outboundDatagrams;
+        $senderEffects = $sender->drainEffects();
+        $outbound = $senderEffects->outboundDatagrams;
         self::assertCount(1, $outbound);
+        self::assertSame(0, $senderEffects->priorityOutboundDatagramCount);
 
         $receiver->receiveBytes($outbound[0]);
         $receiver->receiveBytes($outbound[0]);
@@ -43,8 +45,10 @@ final class ConnectedSessionTest extends TestCase
         self::assertSame('hello', $received[0]->payload);
 
         $receiver->tick();
-        $control = $receiver->drainEffects()->outboundDatagrams;
+        $receiverEffects = $receiver->drainEffects();
+        $control = $receiverEffects->outboundDatagrams;
         self::assertCount(1, $control);
+        self::assertSame(1, $receiverEffects->priorityOutboundDatagramCount);
         $sender->receiveBytes($control[0]);
         $clock->advanceMilliseconds(2_000);
         $sender->tick();
@@ -85,10 +89,12 @@ final class ConnectedSessionTest extends TestCase
             new SequenceRange($originalPacket->sequenceNumber, $originalPacket->sequenceNumber),
         ]));
         $session->tick();
-        $retry = ConnectedDatagram::decode($session->drainEffects()->outboundDatagrams[0]);
+        $effects = $session->drainEffects();
+        $retry = ConnectedDatagram::decode($effects->outboundDatagrams[0]);
 
         self::assertNotSame($originalPacket->sequenceNumber, $retry->sequenceNumber);
         self::assertEquals($originalPacket->frames[0], $retry->frames[0]);
+        self::assertSame(0, $effects->priorityOutboundDatagramCount);
     }
 
     public function testUnsupportedReliabilityIsRejectedForSendAndIgnoredForReceive(): void
@@ -402,6 +408,34 @@ final class ConnectedSessionTest extends TestCase
             $session->tick();
             self::assertLessThanOrEqual(4, \count($session->drainEffects()->outboundDatagrams));
         }
+    }
+
+    public function testDelayedAcknowledgementReleasesOneReliableWindowSlotAfterRetry(): void
+    {
+        $clock = new MutableClock();
+        $limits = new ConnectedSessionLimits(
+            maximumReliableDatagramsInFlight: 2,
+            maximumDatagramsPerTick: 10,
+        );
+        $session = new ConnectedSession($clock, 1_400, $limits);
+        foreach (['one', 'two', 'three'] as $payload) {
+            $session->queuePayload($payload, Reliability::Reliable);
+        }
+
+        $session->tick();
+        $initial = $session->drainEffects()->outboundDatagrams;
+        self::assertCount(2, $initial);
+        $firstSequence = ConnectedDatagram::decode($initial[0])->sequenceNumber;
+
+        $clock->advanceMilliseconds(500);
+        $session->tick();
+        self::assertCount(2, $session->drainEffects()->outboundDatagrams);
+
+        $session->receive(new AckPacket([new SequenceRange($firstSequence, $firstSequence)]));
+        $session->tick();
+        $resumed = $session->drainEffects()->outboundDatagrams;
+        self::assertCount(1, $resumed);
+        self::assertSame('three', ConnectedDatagram::decode($resumed[0])->frames[0]->payload->bytes);
     }
 
     public function testPerTickDataBudgetDoesNotConsumeControlCapacity(): void

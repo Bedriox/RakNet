@@ -49,6 +49,13 @@ final class AcknowledgementAccumulator
         return \count($this->negativeAcknowledgements);
     }
 
+    public function remainingCapacity(): int
+    {
+        return $this->maximumSequences
+            - \count($this->acknowledgements)
+            - \count($this->negativeAcknowledgements);
+    }
+
     /** @return list<SequenceRange> */
     public function drainAcknowledgements(int $maximumRanges = PHP_INT_MAX, int $maximumRecordBytes = PHP_INT_MAX): array
     {

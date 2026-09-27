@@ -6,5 +6,10 @@ namespace Bedriox\RakNet;
 
 final readonly class SessionClosedEvent
 {
-    public function __construct(public SessionInfo $session, public SessionCloseReason $reason) {}
+    public function __construct(
+        public SessionInfo $session,
+        public SessionCloseReason $reason,
+        public ?SessionTransportFailureReason $transportFailure = null,
+        public ?string $transportFailureDetail = null,
+    ) {}
 }

@@ -77,6 +77,7 @@ final class ReliableFrameTrackerTest extends TestCase
         $decision = $tracker->collectDueRetries();
         self::assertSame([], $decision->due);
         self::assertSame([1], $decision->expiredReliableIndices);
+        self::assertSame([10, 11], $decision->expiredReliableFrames[0]->transmissionSequences);
         self::assertSame(0, $tracker->pendingCount());
         self::assertSame(0, $tracker->historyCount());
     }
@@ -88,8 +89,23 @@ final class ReliableFrameTrackerTest extends TestCase
         $tracker->track(1, 'payload');
         $clock->advanceMilliseconds(100);
 
-        self::assertSame([1], $tracker->collectDueRetries()->expiredReliableIndices);
+        $decision = $tracker->collectDueRetries();
+        self::assertSame([1], $decision->expiredReliableIndices);
+        self::assertSame([1], $decision->expiredUnsentReliableIndices);
         self::assertSame(0, $tracker->pendingCount());
+    }
+
+    public function testTransmittedExpiryIsNotReportedAsUnsent(): void
+    {
+        $clock = new MutableClock();
+        $tracker = new ReliableFrameTracker($clock, self::limits(maximumAttempts: 1));
+        $tracker->track(1, 'payload');
+        $tracker->recordTransmission(10, [1]);
+        $clock->advanceMilliseconds(100);
+
+        $decision = $tracker->collectDueRetries();
+        self::assertSame([1], $decision->expiredReliableIndices);
+        self::assertSame([], $decision->expiredUnsentReliableIndices);
     }
 
     public function testFrameCountAndByteLimitsAreHardAndAtomic(): void
@@ -143,6 +159,26 @@ final class ReliableFrameTrackerTest extends TestCase
 
         self::assertSame(2_048, $tracker->historyCount());
         self::assertSame(2_048, $tracker->historyReferenceCount());
+    }
+
+    public function testDelayedAcknowledgementOfEarlierTransmissionCompletesRetriedFrame(): void
+    {
+        $clock = new MutableClock();
+        $tracker = new ReliableFrameTracker($clock, self::limits());
+        $tracker->track(1, 'payload');
+        $tracker->recordTransmission(10, [1]);
+
+        $clock->advanceMilliseconds(100);
+        self::assertCount(1, $tracker->collectDueRetries()->due);
+        $tracker->recordTransmission(11, [1]);
+
+        self::assertSame(1, $tracker->transmittedPendingCount());
+        self::assertSame(2, $tracker->historyCount());
+        self::assertSame([1], $tracker->acknowledgeDatagram(10));
+        self::assertSame(0, $tracker->transmittedPendingCount());
+        self::assertSame(0, $tracker->pendingCount());
+        self::assertSame(0, $tracker->historyCount());
+        self::assertSame([], $tracker->acknowledgeDatagram(11));
     }
 
     private static function limits(

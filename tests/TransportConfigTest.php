@@ -22,12 +22,15 @@ final class TransportConfigTest extends TestCase
         self::assertSame(1_024, $config->maximumSessions);
         self::assertSame(1_024, $config->maximumPendingHandshakes);
         self::assertSame(5_000, $config->handshakeTimeoutMilliseconds);
+        self::assertSame(10, $config->connectedSessionMaintenanceIntervalMilliseconds);
         self::assertSame(4_096, $config->maximumReceivedPayloads);
         self::assertSame(2_097_152, $config->maximumReceivedPayloadBytes);
         self::assertSame(4_096, $config->maximumPendingOutboundDatagrams);
         self::assertSame(4_194_304, $config->maximumPendingOutboundBytes);
         self::assertSame(65_535, $config->maximumSessionEvents);
         self::assertSame(1_024, $config->maximumHandshakeDiagnosticEvents);
+        self::assertSame(4_194_304, $config->socketReceiveBufferBytes);
+        self::assertSame(4_194_304, $config->socketSendBufferBytes);
     }
 
     /** @return iterable<string, array{Closure(): TransportConfig}> */
@@ -44,6 +47,8 @@ final class TransportConfigTest extends TestCase
         yield 'too many pending handshakes' => [fn(): TransportConfig => new TransportConfig(maximumPendingHandshakes: 65_536)];
         yield 'short handshake timeout' => [fn(): TransportConfig => new TransportConfig(handshakeTimeoutMilliseconds: 99)];
         yield 'long handshake timeout' => [fn(): TransportConfig => new TransportConfig(handshakeTimeoutMilliseconds: 60_001)];
+        yield 'no connected-session maintenance interval' => [fn(): TransportConfig => new TransportConfig(connectedSessionMaintenanceIntervalMilliseconds: 0)];
+        yield 'long connected-session maintenance interval' => [fn(): TransportConfig => new TransportConfig(connectedSessionMaintenanceIntervalMilliseconds: 51)];
         yield 'no received payloads' => [fn(): TransportConfig => new TransportConfig(maximumReceivedPayloads: 0)];
         yield 'too many received payloads' => [fn(): TransportConfig => new TransportConfig(maximumReceivedPayloads: 65_536)];
         yield 'no received payload bytes' => [fn(): TransportConfig => new TransportConfig(maximumReceivedPayloadBytes: 0)];
@@ -57,6 +62,10 @@ final class TransportConfigTest extends TestCase
         yield 'too many lifecycle events' => [fn(): TransportConfig => new TransportConfig(maximumSessionEvents: 65_536)];
         yield 'no handshake diagnostic events' => [fn(): TransportConfig => new TransportConfig(maximumHandshakeDiagnosticEvents: 0)];
         yield 'too many handshake diagnostic events' => [fn(): TransportConfig => new TransportConfig(maximumHandshakeDiagnosticEvents: 65_536)];
+        yield 'small receive socket buffer' => [fn(): TransportConfig => new TransportConfig(socketReceiveBufferBytes: 65_535)];
+        yield 'large receive socket buffer' => [fn(): TransportConfig => new TransportConfig(socketReceiveBufferBytes: 67_108_865)];
+        yield 'small send socket buffer' => [fn(): TransportConfig => new TransportConfig(socketSendBufferBytes: 65_535)];
+        yield 'large send socket buffer' => [fn(): TransportConfig => new TransportConfig(socketSendBufferBytes: 67_108_865)];
     }
 
     #[DataProvider('invalidConfigurations')]

@@ -16,9 +16,11 @@ final class ReliableFrameTracker
     private array $pending = [];
 
     private int $pendingPayloadBytes = 0;
+    private int $transmittedPendingCount = 0;
     private readonly SentDatagramHistory $history;
     private readonly RtoEstimator $rto;
     private ?int $lastObservedTime = null;
+    private int $nextReviewAtNanoseconds = PHP_INT_MAX;
 
     public function __construct(
         private readonly Clock $clock,
@@ -53,6 +55,7 @@ final class ReliableFrameTracker
         $frame = new CanonicalReliableFrame($reliableIndex, $payload, $this->now());
         $this->pending[$reliableIndex] = new PendingReliableFrame($frame);
         $this->pendingPayloadBytes += $payloadBytes;
+        $this->nextReviewAtNanoseconds = min($this->nextReviewAtNanoseconds, $this->expiryAt($frame));
 
         return $frame;
     }
@@ -88,18 +91,29 @@ final class ReliableFrameTracker
         }
 
         $datagram = new SentDatagram($datagramSequence, $now, $reliableIndices, $containsRetransmission);
-        if ($containsRetransmission) {
-            $this->history->supersedeAndAdd($datagram);
-        } else {
+        try {
             $this->history->add($datagram);
+        } catch (OverflowException) {
+            if (!$containsRetransmission) {
+                throw new OverflowException('Sent datagram history limit reached.');
+            }
+            $this->history->supersedeAndAdd($datagram);
         }
 
         foreach ($reliableIndices as $reliableIndex) {
             $pending = $this->pending[$reliableIndex];
+            if ($pending->attempts === 0) {
+                ++$this->transmittedPendingCount;
+            }
             ++$pending->attempts;
             $pending->retryQueued = false;
             $delay = $this->rto->backedOffNanoseconds($pending->attempts);
             $pending->nextRetryAtNanoseconds = $now > PHP_INT_MAX - $delay ? PHP_INT_MAX : $now + $delay;
+            $this->nextReviewAtNanoseconds = min(
+                $this->nextReviewAtNanoseconds,
+                $pending->nextRetryAtNanoseconds,
+                $this->expiryAt($pending->frame),
+            );
         }
 
         return $datagram;
@@ -151,6 +165,7 @@ final class ReliableFrameTracker
             $pending = $this->pending[$reliableIndex] ?? null;
             if ($pending !== null && !$pending->retryQueued) {
                 $pending->nextRetryAtNanoseconds = $now;
+                $this->nextReviewAtNanoseconds = min($this->nextReviewAtNanoseconds, $now);
             }
         }
 
@@ -160,13 +175,14 @@ final class ReliableFrameTracker
     public function collectDueRetries(): RetryDecision
     {
         $now = $this->now();
+        if ($now < $this->nextReviewAtNanoseconds) {
+            return new RetryDecision([], [], [], []);
+        }
         $due = [];
         $expired = [];
-        $indexes = array_keys($this->pending);
-        sort($indexes, SORT_NUMERIC);
-
-        foreach ($indexes as $reliableIndex) {
-            $pending = $this->pending[$reliableIndex];
+        $expiredUnsent = [];
+        $expiredFrames = [];
+        foreach ($this->pending as $reliableIndex => $pending) {
             $age = $now - $pending->frame->createdAtNanoseconds;
             $retryDeadlineReached = $pending->attempts > 0 && $now >= $pending->nextRetryAtNanoseconds;
             if (
@@ -174,6 +190,18 @@ final class ReliableFrameTracker
                 || ($retryDeadlineReached && $pending->attempts >= $this->limits->maximumAttempts)
             ) {
                 $expired[] = $reliableIndex;
+                $expiredFrames[] = new ExpiredReliableFrame(
+                    $reliableIndex,
+                    $pending->attempts,
+                    $age,
+                    $pending->frame->payloadBytes(),
+                    $pending->retryQueued,
+                    $pending->nextRetryAtNanoseconds,
+                    $this->history->sequencesForReliableIndex($reliableIndex),
+                );
+                if ($pending->attempts === 0) {
+                    $expiredUnsent[] = $reliableIndex;
+                }
                 $this->removePending($reliableIndex);
                 continue;
             }
@@ -183,7 +211,18 @@ final class ReliableFrameTracker
             }
         }
 
-        return new RetryDecision($due, $expired);
+        $this->nextReviewAtNanoseconds = PHP_INT_MAX;
+        foreach ($this->pending as $pending) {
+            $this->nextReviewAtNanoseconds = min(
+                $this->nextReviewAtNanoseconds,
+                $this->expiryAt($pending->frame),
+                $pending->attempts > 0 && !$pending->retryQueued
+                    ? $pending->nextRetryAtNanoseconds
+                    : PHP_INT_MAX,
+            );
+        }
+
+        return new RetryDecision($due, $expired, $expiredUnsent, $expiredFrames);
     }
 
     public function pendingCount(): int
@@ -194,6 +233,11 @@ final class ReliableFrameTracker
     public function pendingPayloadBytes(): int
     {
         return $this->pendingPayloadBytes;
+    }
+
+    public function transmittedPendingCount(): int
+    {
+        return $this->transmittedPendingCount;
     }
 
     public function historyCount(): int
@@ -219,7 +263,20 @@ final class ReliableFrameTracker
         }
         unset($this->pending[$reliableIndex]);
         $this->pendingPayloadBytes -= $pending->frame->payloadBytes();
+        if ($pending->attempts > 0) {
+            --$this->transmittedPendingCount;
+        }
         $this->history->removeReliableIndex($reliableIndex);
+        if ($this->pending === []) {
+            $this->nextReviewAtNanoseconds = PHP_INT_MAX;
+        }
+    }
+
+    private function expiryAt(CanonicalReliableFrame $frame): int
+    {
+        return $frame->createdAtNanoseconds > PHP_INT_MAX - $this->limits->maximumAgeNanoseconds
+            ? PHP_INT_MAX
+            : $frame->createdAtNanoseconds + $this->limits->maximumAgeNanoseconds;
     }
 
     private function now(): int

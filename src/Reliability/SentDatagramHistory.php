@@ -166,4 +166,12 @@ final class SentDatagramHistory
     {
         return $this->referenceCount;
     }
+
+    /** @return list<int> */
+    public function sequencesForReliableIndex(int $reliableIndex): array
+    {
+        Sequence24::validate($reliableIndex);
+
+        return array_map('intval', array_keys($this->sequencesByReliableIndex[$reliableIndex] ?? []));
+    }
 }

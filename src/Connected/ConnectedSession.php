@@ -72,8 +72,13 @@ final class ConnectedSession
     /** @var list<string> */
     private array $outboundEffects = [];
     private int $outboundEffectBytes = 0;
+    private int $priorityOutboundEffectCount = 0;
     /** @var list<int> */
     private array $expiredEffects = [];
+    /** @var list<int> */
+    private array $expiredUnsentEffects = [];
+    /** @var list<\Bedriox\RakNet\Reliability\ExpiredReliableFrame> */
+    private array $expiredFrameEffects = [];
     /** @var array<int, int> */
     private array $nextOrderingIndices;
     private int $nextDatagramSequence;
@@ -148,7 +153,7 @@ final class ConnectedSession
             AcknowledgementCodec::NACK_ID => NackPacket::decode($bytes),
             default => ConnectedDatagram::decode($bytes),
         };
-        $this->receive($packet);
+        $this->receiveDecoded($packet);
     }
 
     public function receive(ConnectedDatagram|AckPacket|NackPacket $packet): void
@@ -157,6 +162,12 @@ final class ConnectedSession
         if (\strlen($packet->encode()) > $this->udpPayloadBudget) {
             throw new InvalidArgumentException('Inbound packet exceeds the negotiated UDP payload budget.');
         }
+
+        $this->receiveDecoded($packet);
+    }
+
+    private function receiveDecoded(ConnectedDatagram|AckPacket|NackPacket $packet): void
+    {
         if ($packet instanceof AckPacket) {
             $this->processAcknowledgement($packet->ranges, false);
 
@@ -247,6 +258,12 @@ final class ConnectedSession
             $this->releaseReliableSplitLease($index);
             $this->expiredEffects[] = $index;
         }
+        foreach ($decision->expiredUnsentReliableIndices as $index) {
+            $this->expiredUnsentEffects[] = $index;
+        }
+        foreach ($decision->expiredReliableFrames as $expiredFrame) {
+            $this->expiredFrameEffects[] = $expiredFrame;
+        }
         if ($decision->expiredReliableIndices !== []) {
             $expired = array_fill_keys($decision->expiredReliableIndices, true);
             $this->outboundFrames = array_values(array_filter(
@@ -281,12 +298,18 @@ final class ConnectedSession
             $this->payloadEffects,
             $this->outboundEffects,
             $this->expiredEffects,
+            $this->expiredUnsentEffects,
+            $this->priorityOutboundEffectCount,
+            $this->expiredFrameEffects,
         );
         $this->payloadEffects = [];
         $this->payloadEffectBytes = 0;
         $this->outboundEffects = [];
         $this->outboundEffectBytes = 0;
         $this->expiredEffects = [];
+        $this->expiredUnsentEffects = [];
+        $this->expiredFrameEffects = [];
+        $this->priorityOutboundEffectCount = 0;
 
         return $effects;
     }
@@ -314,6 +337,9 @@ final class ConnectedSession
         $this->payloadEffects = [];
         $this->outboundEffects = [];
         $this->expiredEffects = [];
+        $this->expiredUnsentEffects = [];
+        $this->expiredFrameEffects = [];
+        $this->priorityOutboundEffectCount = 0;
         $this->outboundFrameBytes = $this->payloadEffectBytes = $this->outboundEffectBytes = 0;
         $this->closed = true;
     }
@@ -321,54 +347,35 @@ final class ConnectedSession
     private function processConnectedDatagram(ConnectedDatagram $datagram): void
     {
         try {
-            try {
-                [$receiveWindow, $acknowledgements, $result] = $this->previewDatagramAdmission($datagram->sequenceNumber);
-            } catch (OverflowException) {
-                $before = $this->acknowledgements()->acknowledgementCount()
-                    + $this->acknowledgements()->negativeAcknowledgementCount();
+            $result = $this->receiveWindow()->observe($datagram->sequenceNumber);
+            $requiredAcknowledgements = ($result->observation->isAccepted()
+                || $result->observation->name === 'Duplicate' ? 1 : 0)
+                + ($result->observation->isAccepted() ? \count($result->missingSequences) : 0);
+            if ($requiredAcknowledgements > $this->acknowledgements()->remainingCapacity()) {
                 $this->flushControlPackets();
-                $after = $this->acknowledgements()->acknowledgementCount()
-                    + $this->acknowledgements()->negativeAcknowledgementCount();
-                if ($after >= $before) {
+                if ($requiredAcknowledgements > $this->acknowledgements()->remainingCapacity()) {
                     throw new OverflowException('Acknowledgement state cannot admit the inbound datagram.');
                 }
-                [$receiveWindow, $acknowledgements, $result] = $this->previewDatagramAdmission($datagram->sequenceNumber);
             }
-
+            if ($result->observation->isAccepted() || $result->observation->name === 'Duplicate') {
+                $this->acknowledgements()->acknowledge($datagram->sequenceNumber);
+            }
+            if ($result->observation->isAccepted()) {
+                foreach ($result->missingSequences as $missing) {
+                    $this->acknowledgements()->negativeAcknowledge($missing);
+                }
+            }
             if (!$result->observation->isAccepted()) {
-                $this->receiveWindow = $receiveWindow;
-                $this->acknowledgements = $acknowledgements;
-
                 return;
             }
 
             foreach ($datagram->frames as $frame) {
                 $this->processFrame($frame);
             }
-            $this->receiveWindow = $receiveWindow;
-            $this->acknowledgements = $acknowledgements;
         } catch (OverflowException|UnexpectedValueException $exception) {
             $this->clear();
             throw $exception;
         }
-    }
-
-    /** @return array{ReceiveSequenceWindow, AcknowledgementAccumulator, \Bedriox\RakNet\Reliability\ReceiveSequenceResult} */
-    private function previewDatagramAdmission(int $sequence): array
-    {
-        $receiveWindow = clone $this->receiveWindow();
-        $acknowledgements = clone $this->acknowledgements();
-        $result = $receiveWindow->observe($sequence);
-        if ($result->observation->isAccepted() || $result->observation->name === 'Duplicate') {
-            $acknowledgements->acknowledge($sequence);
-        }
-        if ($result->observation->isAccepted()) {
-            foreach ($result->missingSequences as $missing) {
-                $acknowledgements->negativeAcknowledge($missing);
-            }
-        }
-
-        return [$receiveWindow, $acknowledgements, $result];
     }
 
     private function processFrame(EncapsulatedFrame $frame): void
@@ -638,7 +645,7 @@ final class ConnectedSession
         $ack
             ? $acknowledgements->drainAcknowledgements(AcknowledgementCodec::MAXIMUM_RECORDS, $this->udpPayloadBudget - 3)
             : $acknowledgements->drainNegativeAcknowledgements(AcknowledgementCodec::MAXIMUM_RECORDS, $this->udpPayloadBudget - 3);
-        $this->appendOutbound($encoded);
+        $this->appendOutbound($encoded, true);
 
         return true;
     }
@@ -678,7 +685,7 @@ final class ConnectedSession
             $frame = $this->outboundFrames[$key];
             if (
                 $frame->reliableIndex !== null
-                && $this->tracker()->historyCount() >= $this->limits->maximumReliableDatagramsInFlight
+                && $this->tracker()->transmittedPendingCount() >= $this->limits->maximumReliableDatagramsInFlight
             ) {
                 return;
             }
@@ -701,13 +708,16 @@ final class ConnectedSession
         }
     }
 
-    private function appendOutbound(string $datagram): void
+    private function appendOutbound(string $datagram, bool $priority = false): void
     {
         if (!$this->canAppendOutbound(1, \strlen($datagram))) {
             throw new OverflowException('Undrained outbound effect limit reached.');
         }
         $this->outboundEffects[] = $datagram;
         $this->outboundEffectBytes += \strlen($datagram);
+        if ($priority) {
+            ++$this->priorityOutboundEffectCount;
+        }
     }
 
     private function canAppendOutbound(int $count, int $bytes): bool

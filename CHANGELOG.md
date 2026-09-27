@@ -10,6 +10,8 @@ All notable changes to Bedriox/RakNet are documented here. The project follows [
 
 ### Fixed
 
+- Isolate connected-session tick failures to the affected endpoint so one
+  saturated or invalid session cannot stop the shared transport server.
 - Kept the shared Windows UDP listener alive when a late response to a closed peer reports `WSAECONNRESET`.
 
 ## [0.1.0-alpha.1] - 2026-09-17

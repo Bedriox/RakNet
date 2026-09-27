@@ -20,12 +20,15 @@ final readonly class TransportConfig
         public int $handshakeTimeoutMilliseconds = 5_000,
         public int $sessionIdleTimeoutMilliseconds = 30_000,
         public int $sessionPingIntervalMilliseconds = 5_000,
+        public int $connectedSessionMaintenanceIntervalMilliseconds = 10,
         public int $maximumReceivedPayloads = 4_096,
         public int $maximumReceivedPayloadBytes = 2_097_152,
         public int $maximumPendingOutboundDatagrams = 4_096,
         public int $maximumPendingOutboundBytes = 4_194_304,
         public int $maximumSessionEvents = 65_535,
         public int $maximumHandshakeDiagnosticEvents = 1_024,
+        public int $socketReceiveBufferBytes = 4_194_304,
+        public int $socketSendBufferBytes = 4_194_304,
     ) {
         if ($this->bindAddress === '') {
             throw new InvalidArgumentException('Bind address cannot be empty.');
@@ -56,6 +59,10 @@ final readonly class TransportConfig
         if ($this->sessionPingIntervalMilliseconds < 1_000 || $this->sessionPingIntervalMilliseconds >= $this->sessionIdleTimeoutMilliseconds) {
             throw new InvalidArgumentException('Session ping interval must be at least 1000 milliseconds and shorter than the idle timeout.');
         }
+        if ($this->connectedSessionMaintenanceIntervalMilliseconds < 1
+            || $this->connectedSessionMaintenanceIntervalMilliseconds > 50) {
+            throw new InvalidArgumentException('Connected-session maintenance interval must be between 1 and 50 milliseconds.');
+        }
 
         if ($this->maximumReceivedPayloads < 1 || $this->maximumReceivedPayloads > 65_535) {
             throw new InvalidArgumentException('Maximum received payloads must be between 1 and 65535.');
@@ -80,6 +87,12 @@ final readonly class TransportConfig
         }
         if ($this->maximumHandshakeDiagnosticEvents < 1 || $this->maximumHandshakeDiagnosticEvents > 65_535) {
             throw new InvalidArgumentException('Maximum handshake diagnostic events must be between 1 and 65535.');
+        }
+        if ($this->socketReceiveBufferBytes < 65_536 || $this->socketReceiveBufferBytes > 67_108_864) {
+            throw new InvalidArgumentException('Socket receive buffer must be between 65536 and 67108864 bytes.');
+        }
+        if ($this->socketSendBufferBytes < 65_536 || $this->socketSendBufferBytes > 67_108_864) {
+            throw new InvalidArgumentException('Socket send buffer must be between 65536 and 67108864 bytes.');
         }
     }
 }

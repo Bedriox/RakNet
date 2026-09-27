@@ -30,6 +30,7 @@ final class DiscoveryServer
 {
     public const int DEFAULT_RAKNET_PROTOCOL_VERSION = 11;
     public const int MAXIMUM_IPV4_PROBE_MTU = OpenConnectionRequest1::MAXIMUM_MTU;
+    public const int MAXIMUM_DATAGRAMS_PER_POLL = 4_096;
 
     private bool $closed = false;
 
@@ -61,11 +62,16 @@ final class DiscoveryServer
 
     private int $receivedPayloadBytes = 0;
 
-    /** @var array<string, list<string>> */
+    /** @var array<string, array{priority: list<string>, normal: list<string>}> */
     private array $pendingOutboundDatagrams = [];
 
     private int $pendingOutboundDatagramCount = 0;
     private int $pendingOutboundBytes = 0;
+
+    /** @var array<string, true> */
+    private array $connectedSessionsDue = [];
+
+    private int $nextConnectedSessionMaintenanceNanoseconds = 0;
 
     private function __construct(
         private readonly Socket $socket,
@@ -79,6 +85,7 @@ final class DiscoveryServer
         private readonly int $handshakeTimeoutNanoseconds,
         private readonly int $sessionIdleTimeoutNanoseconds,
         private readonly int $sessionPingIntervalNanoseconds,
+        private readonly int $connectedSessionMaintenanceIntervalNanoseconds,
         private readonly int $rakNetProtocolVersion,
         private readonly Clock $clock,
         private readonly int $maximumReceivedPayloads,
@@ -111,6 +118,12 @@ final class DiscoveryServer
         try {
             if (!socket_set_option($socket, SOL_SOCKET, SO_REUSEADDR, 1)) {
                 throw new TransportException('Unable to configure UDP socket reuse.');
+            }
+            if (!socket_set_option($socket, SOL_SOCKET, SO_RCVBUF, $config->socketReceiveBufferBytes)) {
+                throw new TransportException('Unable to configure the UDP receive buffer.');
+            }
+            if (!socket_set_option($socket, SOL_SOCKET, SO_SNDBUF, $config->socketSendBufferBytes)) {
+                throw new TransportException('Unable to configure the UDP send buffer.');
             }
 
             if (!socket_set_nonblock($socket)) {
@@ -145,6 +158,7 @@ final class DiscoveryServer
                 $config->handshakeTimeoutMilliseconds * 1_000_000,
                 $config->sessionIdleTimeoutMilliseconds * 1_000_000,
                 $config->sessionPingIntervalMilliseconds * 1_000_000,
+                $config->connectedSessionMaintenanceIntervalMilliseconds * 1_000_000,
                 $rakNetProtocolVersion,
                 $clock ?? new SystemClock(),
                 $config->maximumReceivedPayloads,
@@ -248,6 +262,7 @@ final class DiscoveryServer
         }
 
         $session->queuePayload($payload, $reliability, $orderingChannel);
+        $this->connectedSessionsDue[$key] = true;
     }
 
     /** @return list<ReceivedPayload> */
@@ -287,13 +302,13 @@ final class DiscoveryServer
             throw new TransportException('Cannot poll a closed discovery server.');
         }
 
-        if ($maximumDatagrams < 1 || $maximumDatagrams > 1_024) {
-            throw new TransportException('Poll batch must be between 1 and 1024 datagrams.');
+        if ($maximumDatagrams < 1 || $maximumDatagrams > self::MAXIMUM_DATAGRAMS_PER_POLL) {
+            throw new TransportException('Poll batch must be between 1 and 4096 datagrams.');
         }
 
         $this->expirePendingHandshakes();
         $handled = 0;
-        while ($handled < $maximumDatagrams && $this->isReadable()) {
+        while ($handled < $maximumDatagrams) {
             $payload = '';
             $sourceAddress = '';
             $sourcePort = 0;
@@ -343,6 +358,9 @@ final class DiscoveryServer
                     $connectedInput = true;
                     $connectedSession->receiveBytes($payload);
                     $this->consumeConnectedEffects($key, $connectedSession, false, $packetId);
+                    if (isset($this->connectedSessions[$key])) {
+                        $this->connectedSessionsDue[$key] = true;
+                    }
                     continue;
                 }
 
@@ -355,7 +373,11 @@ final class DiscoveryServer
                         datagramId: $packetId,
                         payloadLength: $received,
                     );
-                    $this->removeSessionByKey($key, SessionCloseReason::TransportFailure);
+                    $this->removeSessionByKey(
+                        $key,
+                        SessionCloseReason::TransportFailure,
+                        transportFailure: SessionTransportFailureReason::MalformedDatagram,
+                    );
                 }
                 continue;
             } catch (UnexpectedValueException $exception) {
@@ -366,13 +388,22 @@ final class DiscoveryServer
                         datagramId: $packetId,
                         payloadLength: $received,
                     );
-                    $this->removeSessionByKey($key, SessionCloseReason::TransportFailure);
+                    $this->removeSessionByKey(
+                        $key,
+                        SessionCloseReason::TransportFailure,
+                        transportFailure: SessionTransportFailureReason::MalformedDatagram,
+                    );
                     continue;
                 }
 
                 throw new TransportException('Offline session failed closed while receiving a datagram.', 0, $exception);
             } catch (OverflowException|LogicException $exception) {
-                $this->removeSessionByKey($key, SessionCloseReason::TransportFailure);
+                $this->removeSessionByKey(
+                    $key,
+                    SessionCloseReason::TransportFailure,
+                    transportFailure: self::transportFailureReason($exception),
+                    transportFailureDetail: $exception->getMessage(),
+                );
                 throw new TransportException('Connected session failed closed while receiving a datagram.', 0, $exception);
             }
 
@@ -405,7 +436,7 @@ final class DiscoveryServer
             }
         }
 
-        $this->tickConnectedSessions();
+        $this->maintainConnectedSessions();
 
         return $handled;
     }
@@ -434,6 +465,7 @@ final class DiscoveryServer
         $this->pendingOutboundDatagrams = [];
         $this->pendingOutboundDatagramCount = 0;
         $this->pendingOutboundBytes = 0;
+        $this->connectedSessionsDue = [];
         $this->sessionEvents = $closing;
         socket_close($this->socket);
         $this->closed = true;
@@ -442,20 +474,6 @@ final class DiscoveryServer
     public function __destruct()
     {
         $this->close();
-    }
-
-    private function isReadable(): bool
-    {
-        $read = [$this->socket];
-        $write = null;
-        $except = null;
-
-        $selected = @socket_select($read, $write, $except, 0, 0);
-        if ($selected === false) {
-            throw $this->socketFailure('poll the UDP socket');
-        }
-
-        return $selected === 1;
     }
 
     private function handleOfflineDatagram(string $payload, string $sourceAddress, int $sourcePort): ?OfflineDatagramResult
@@ -568,10 +586,31 @@ final class DiscoveryServer
         }
     }
 
-    private function tickConnectedSessions(): void
+    private function maintainConnectedSessions(): void
     {
-        foreach (array_keys($this->connectedSessions) as $key) {
-            $session = $this->connectedSessions[$key];
+        $now = $this->clock->nowNanoseconds();
+        if ($now >= $this->nextConnectedSessionMaintenanceNanoseconds) {
+            $keys = array_keys($this->connectedSessions);
+            $this->nextConnectedSessionMaintenanceNanoseconds = $now > PHP_INT_MAX - $this->connectedSessionMaintenanceIntervalNanoseconds
+                ? PHP_INT_MAX
+                : $now + $this->connectedSessionMaintenanceIntervalNanoseconds;
+        } else {
+            $keys = array_keys($this->connectedSessionsDue);
+        }
+        foreach ($keys as $key) {
+            unset($this->connectedSessionsDue[$key]);
+        }
+        $this->tickConnectedSessions($keys, $now);
+    }
+
+    /** @param list<string> $keys */
+    private function tickConnectedSessions(array $keys, int $now): void
+    {
+        foreach ($keys as $key) {
+            $session = $this->connectedSessions[$key] ?? null;
+            if (!$session instanceof ConnectedSession) {
+                continue;
+            }
 
             try {
                 $control = $this->connectedControlSessions[$key] ?? null;
@@ -579,7 +618,7 @@ final class DiscoveryServer
                     throw new LogicException('Connected session has no control-phase owner.');
                 }
                 $diagnosticStage = $this->connectedHandshakeStage($control);
-                $timeoutReason = $control->tick($this->clock->nowNanoseconds());
+                $timeoutReason = $control->tick($now);
                 if ($timeoutReason !== null) {
                     if ($timeoutReason === SessionCloseReason::HandshakeTimeout) {
                         $this->appendHandshakeDiagnosticFor(
@@ -591,19 +630,24 @@ final class DiscoveryServer
                     $this->removeSessionByKey($key, $timeoutReason);
                     continue;
                 }
-                $ping = $control->heartbeatPayload($this->clock->nowNanoseconds());
+                $ping = $control->heartbeatPayload($now);
                 if ($ping !== null) {
                     $session->queuePayload($ping->payload, $ping->reliability, $ping->orderingChannel);
                 }
                 $this->flushPendingOutbound($key);
-                if (($this->pendingOutboundDatagrams[$key] ?? []) !== []) {
-                    continue;
-                }
                 $session->tick();
                 $this->consumeConnectedEffects($key, $session, true);
+                if (isset($this->pendingOutboundDatagrams[$key])) {
+                    $this->connectedSessionsDue[$key] = true;
+                }
             } catch (OverflowException|LogicException $exception) {
-                $this->removeSessionByKey($key, SessionCloseReason::TransportFailure);
-                throw new TransportException('Connected session failed closed while ticking.', 0, $exception);
+                $this->removeSessionByKey(
+                    $key,
+                    SessionCloseReason::TransportFailure,
+                    transportFailure: self::transportFailureReason($exception),
+                    transportFailureDetail: $exception->getMessage(),
+                );
+                continue;
             }
         }
     }
@@ -641,7 +685,11 @@ final class DiscoveryServer
                     reliability: $payload->reliability,
                     orderingChannel: $payload->orderingChannel,
                 );
-                $this->removeSessionByKey($key, SessionCloseReason::TransportFailure);
+                $this->removeSessionByKey(
+                    $key,
+                    SessionCloseReason::TransportFailure,
+                    transportFailure: SessionTransportFailureReason::InvalidControlEnvelope,
+                );
 
                 return;
             }
@@ -651,7 +699,12 @@ final class DiscoveryServer
                 && \ord($payload->payload[0]) === \Bedriox\RakNet\Protocol\NewIncomingConnection::ID
                 && \count($this->sessionEvents) >= $this->maximumSessionEvents
             ) {
-                $this->removeSessionByKey($key, SessionCloseReason::TransportFailure, false);
+                $this->removeSessionByKey(
+                    $key,
+                    SessionCloseReason::TransportFailure,
+                    false,
+                    SessionTransportFailureReason::SessionEventQueue,
+                );
                 throw new OverflowException('Session lifecycle event queue limit reached.');
             }
             try {
@@ -666,7 +719,11 @@ final class DiscoveryServer
                     reliability: $payload->reliability,
                     orderingChannel: $payload->orderingChannel,
                 );
-                $this->removeSessionByKey($key, SessionCloseReason::TransportFailure);
+                $this->removeSessionByKey(
+                    $key,
+                    SessionCloseReason::TransportFailure,
+                    transportFailure: SessionTransportFailureReason::InvalidControlPayload,
+                );
 
                 return;
             }
@@ -694,7 +751,11 @@ final class DiscoveryServer
             \count($applicationPayloads) > $this->maximumReceivedPayloads - \count($this->receivedPayloads)
             || $newBytes > $this->maximumReceivedPayloadBytes - $this->receivedPayloadBytes
         ) {
-            $this->removeSessionByKey($key, SessionCloseReason::TransportFailure);
+            $this->removeSessionByKey(
+                $key,
+                SessionCloseReason::TransportFailure,
+                transportFailure: SessionTransportFailureReason::GlobalReceivedPayloadQueue,
+            );
             throw new TransportException('Global received-payload queue limit reached; endpoint was removed.');
         }
 
@@ -717,13 +778,22 @@ final class DiscoveryServer
             \count($effects->outboundDatagrams) > $this->maximumPendingOutboundDatagrams - $this->pendingOutboundDatagramCount
             || $newOutboundBytes > $this->maximumPendingOutboundBytes - $this->pendingOutboundBytes
         ) {
-            $this->removeSessionByKey($key, SessionCloseReason::TransportFailure);
+            $this->removeSessionByKey(
+                $key,
+                SessionCloseReason::TransportFailure,
+                transportFailure: SessionTransportFailureReason::GlobalPendingOutboundQueue,
+            );
             throw new TransportException('Global pending-outbound queue limit reached; endpoint was removed.');
         }
-        foreach ($effects->outboundDatagrams as $datagram) {
-            $this->pendingOutboundDatagrams[$key][] = $datagram;
+        $queues = $this->pendingOutboundDatagrams[$key] ?? ['priority' => [], 'normal' => []];
+        foreach ($effects->outboundDatagrams as $offset => $datagram) {
+            $queue = $offset < $effects->priorityOutboundDatagramCount ? 'priority' : 'normal';
+            $queues[$queue][] = $datagram;
             ++$this->pendingOutboundDatagramCount;
             $this->pendingOutboundBytes += \strlen($datagram);
+        }
+        if ($effects->outboundDatagrams !== []) {
+            $this->pendingOutboundDatagrams[$key] = $queues;
         }
         if (!$sendOutbound) {
             return;
@@ -752,8 +822,13 @@ final class DiscoveryServer
         }
     }
 
-    private function removeSessionByKey(string $key, SessionCloseReason $reason, bool $emitEvent = true): void
-    {
+    private function removeSessionByKey(
+        string $key,
+        SessionCloseReason $reason,
+        bool $emitEvent = true,
+        ?SessionTransportFailureReason $transportFailure = null,
+        ?string $transportFailureDetail = null,
+    ): void {
         $sessionInfo = $this->sessions[$key] ?? null;
         $wasReady = ($this->connectedControlSessions[$key] ?? null)?->hasOpened() ?? false;
         ($this->connectedSessions[$key] ?? null)?->clear();
@@ -762,12 +837,18 @@ final class DiscoveryServer
             $this->connectedControlSessions[$key],
             $this->sessions[$key],
             $this->pendingHandshakes[$key],
+            $this->connectedSessionsDue[$key],
         );
         $this->releasePendingOutbound($key);
         if ($sessionInfo instanceof SessionInfo) {
             unset($this->guidEndpoints[$sessionInfo->clientGuid]);
             if ($wasReady && $emitEvent) {
-                $this->appendSessionEvent(new SessionClosedEvent($sessionInfo, $reason));
+                $this->appendSessionEvent(new SessionClosedEvent(
+                    $sessionInfo,
+                    $reason,
+                    $transportFailure,
+                    $transportFailureDetail,
+                ));
             }
         }
     }
@@ -839,8 +920,13 @@ final class DiscoveryServer
             return;
         }
 
-        while (($this->pendingOutboundDatagrams[$key] ?? []) !== []) {
-            $datagram = $this->pendingOutboundDatagrams[$key][0];
+        while (isset($this->pendingOutboundDatagrams[$key])) {
+            $queues = $this->pendingOutboundDatagrams[$key];
+            $queue = $queues['priority'] !== [] ? 'priority' : 'normal';
+            if ($queues[$queue] === []) {
+                break;
+            }
+            $datagram = $queues[$queue][0];
             $length = \strlen($datagram);
             $sent = @socket_sendto(
                 $this->socket,
@@ -857,28 +943,42 @@ final class DiscoveryServer
 
                     return;
                 }
-                $this->removeSessionByKey($key, SessionCloseReason::TransportFailure);
+                $this->removeSessionByKey(
+                    $key,
+                    SessionCloseReason::TransportFailure,
+                    transportFailure: SessionTransportFailureReason::SocketSend,
+                );
                 throw $this->socketFailure('send a connected UDP datagram', $error);
             }
             if ($sent !== $length) {
                 $error = socket_last_error($this->socket);
-                $this->removeSessionByKey($key, SessionCloseReason::TransportFailure);
+                $this->removeSessionByKey(
+                    $key,
+                    SessionCloseReason::TransportFailure,
+                    transportFailure: SessionTransportFailureReason::SocketSend,
+                );
                 throw $this->socketFailure('send a complete connected UDP datagram', $error);
             }
 
-            array_shift($this->pendingOutboundDatagrams[$key]);
+            array_shift($queues[$queue]);
+            $this->pendingOutboundDatagrams[$key] = $queues;
             --$this->pendingOutboundDatagramCount;
             $this->pendingOutboundBytes -= $length;
         }
-        unset($this->pendingOutboundDatagrams[$key]);
+        $queues = $this->pendingOutboundDatagrams[$key] ?? null;
+        if ($queues !== null && $queues['priority'] === [] && $queues['normal'] === []) {
+            unset($this->pendingOutboundDatagrams[$key]);
+        }
     }
 
     private function releasePendingOutbound(string $key): void
     {
-        $pending = $this->pendingOutboundDatagrams[$key] ?? [];
-        foreach ($pending as $datagram) {
-            --$this->pendingOutboundDatagramCount;
-            $this->pendingOutboundBytes -= \strlen($datagram);
+        $pending = $this->pendingOutboundDatagrams[$key] ?? ['priority' => [], 'normal' => []];
+        foreach ([$pending['priority'], $pending['normal']] as $queue) {
+            foreach ($queue as $datagram) {
+                --$this->pendingOutboundDatagramCount;
+                $this->pendingOutboundBytes -= \strlen($datagram);
+            }
         }
         unset($this->pendingOutboundDatagrams[$key]);
     }
@@ -903,5 +1003,21 @@ final class DiscoveryServer
         $message = $error === 0 ? 'unknown socket error' : socket_strerror($error);
 
         return new TransportException(\sprintf('Unable to %s: [%d] %s.', $operation, $error, $message), $error);
+    }
+
+    private static function transportFailureReason(OverflowException|LogicException $exception): SessionTransportFailureReason
+    {
+        return match ($exception->getMessage()) {
+            'Outbound frame queue limit reached.' => SessionTransportFailureReason::OutboundFrameQueue,
+            'Reliable frame tracking limit reached.' => SessionTransportFailureReason::ReliableFrameTracking,
+            'Undrained reliable-expiry effect limit reached; session was cleared.' => SessionTransportFailureReason::ReliableExpiryQueue,
+            'Fragment reassembly capacity was exhausted.' => SessionTransportFailureReason::FragmentReassembly,
+            'Ordered-delivery capacity was exhausted.' => SessionTransportFailureReason::OrderedDelivery,
+            'Undrained delivered-payload effect limit reached; session was cleared.' => SessionTransportFailureReason::DeliveredPayloadQueue,
+            'Outbound datagram queue limit reached.' => SessionTransportFailureReason::OutboundDatagramQueue,
+            default => $exception instanceof LogicException
+                ? SessionTransportFailureReason::InvariantViolation
+                : SessionTransportFailureReason::ResourceLimit,
+        };
     }
 }

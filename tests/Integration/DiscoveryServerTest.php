@@ -481,7 +481,7 @@ final class DiscoveryServerTest extends TestCase
     {
         $this->startServer();
         $this->expectException(TransportException::class);
-        $this->server()->poll(1_025);
+        $this->server()->poll(4_097);
     }
 
     private function startServer(): void
