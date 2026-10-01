@@ -26,4 +26,4 @@ composer check
 - Avoid wall-clock and real-network dependencies in unit tests.
 - Run `composer check` before submitting changes.
 
-Use focused commit messages without personal-email trailers. Major changes require an accepted RFC in the Bedriox/RFCs repository before implementation.
+Use focused commit messages without personal-email trailers. Major changes require a written design proposal approved by the maintainers before implementation.

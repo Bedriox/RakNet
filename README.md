@@ -22,7 +22,7 @@ composer install
 composer check
 ```
 
-The package is not published on Packagist during private development. Bedriox consumes it as a Composer VCS repository.
+The package is not currently published on Packagist. Bedriox consumes the public repository at an exact reviewed commit.
 
 ## Smallest example
 
