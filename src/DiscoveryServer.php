@@ -20,6 +20,9 @@ use Bedriox\RakNet\Protocol\OpenConnectionRequest2;
 use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\RakNet\Protocol\UnconnectedPing;
 use Bedriox\RakNet\Protocol\UnconnectedPong;
+use Bedriox\RakNet\Security\AdmissionDecision;
+use Bedriox\RakNet\Security\TransportAbuseGuard;
+use Bedriox\RakNet\Security\TransportSecuritySnapshot;
 use InvalidArgumentException;
 use LogicException;
 use OverflowException;
@@ -73,6 +76,8 @@ final class DiscoveryServer
 
     private int $nextConnectedSessionMaintenanceNanoseconds = 0;
 
+    private readonly TransportAbuseGuard $abuseGuard;
+
     private function __construct(
         private readonly Socket $socket,
         private readonly int $maximumNegotiatedMtu,
@@ -94,7 +99,10 @@ final class DiscoveryServer
         private readonly int $maximumPendingOutboundBytes,
         private readonly int $maximumSessionEvents,
         private readonly int $maximumHandshakeDiagnosticEvents,
-    ) {}
+        TransportAbuseGuard $abuseGuard,
+    ) {
+        $this->abuseGuard = $abuseGuard;
+    }
 
     public static function bind(
         TransportConfig $config,
@@ -146,6 +154,8 @@ final class DiscoveryServer
                 throw new TransportException('UDP socket returned an invalid bound address.');
             }
 
+            $resolvedClock = $clock ?? new SystemClock();
+
             return new self(
                 $socket,
                 $config->maximumTransmissionUnit,
@@ -160,13 +170,14 @@ final class DiscoveryServer
                 $config->sessionPingIntervalMilliseconds * 1_000_000,
                 $config->connectedSessionMaintenanceIntervalMilliseconds * 1_000_000,
                 $rakNetProtocolVersion,
-                $clock ?? new SystemClock(),
+                $resolvedClock,
                 $config->maximumReceivedPayloads,
                 $config->maximumReceivedPayloadBytes,
                 $config->maximumPendingOutboundDatagrams,
                 $config->maximumPendingOutboundBytes,
                 $config->maximumSessionEvents,
                 $config->maximumHandshakeDiagnosticEvents,
+                new TransportAbuseGuard($config->security, $resolvedClock),
             );
         } catch (\Throwable $exception) {
             socket_close($socket);
@@ -225,6 +236,21 @@ final class DiscoveryServer
         $this->expirePendingHandshakes();
 
         return \count($this->pendingHandshakes);
+    }
+
+    public function securitySnapshot(): TransportSecuritySnapshot
+    {
+        return $this->abuseGuard->snapshot();
+    }
+
+    public function blockAddress(string $address, ?int $seconds = null): void
+    {
+        $this->abuseGuard->blockAddress($address, $seconds);
+    }
+
+    public function unblockAddress(string $address): void
+    {
+        $this->abuseGuard->unblockAddress($address);
     }
 
     public function sessionFor(string $remoteAddress, int $remotePort): ?SessionInfo
@@ -349,6 +375,16 @@ final class DiscoveryServer
             try {
                 $packetId = \ord($payload[0]);
                 $connectedSession = $this->connectedSessions[$key] ?? null;
+                $admission = $this->abuseGuard->admit(
+                    $sourceAddress,
+                    $sourcePort,
+                    $received,
+                    $connectedSession instanceof ConnectedSession,
+                    $packetId === OpenConnectionRequest1::ID || $packetId === OpenConnectionRequest2::ID,
+                );
+                if ($admission !== AdmissionDecision::ALLOW) {
+                    continue;
+                }
                 $isControlPacket = $packetId === AcknowledgementCodec::ACK_ID
                     || $packetId === AcknowledgementCodec::NACK_ID;
                 if (
@@ -366,6 +402,7 @@ final class DiscoveryServer
 
                 $result = $this->handleOfflineDatagram($payload, $sourceAddress, $sourcePort);
             } catch (CodecException|InvalidArgumentException) {
+                $this->abuseGuard->malformed($sourceAddress);
                 if ($connectedInput) {
                     $this->appendHandshakeDiagnosticFor(
                         $key,
@@ -381,6 +418,7 @@ final class DiscoveryServer
                 }
                 continue;
             } catch (UnexpectedValueException $exception) {
+                $this->abuseGuard->malformed($sourceAddress, true);
                 if ($connectedInput) {
                     $this->appendHandshakeDiagnosticFor(
                         $key,

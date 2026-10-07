@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bedriox\RakNet;
 
+use Bedriox\RakNet\Security\TransportSecurityPolicy;
 use InvalidArgumentException;
 
 /**
@@ -11,6 +12,8 @@ use InvalidArgumentException;
  */
 final readonly class TransportConfig
 {
+    public TransportSecurityPolicy $security;
+
     public function __construct(
         public string $bindAddress = '0.0.0.0',
         public int $port = 19132,
@@ -29,7 +32,9 @@ final readonly class TransportConfig
         public int $maximumHandshakeDiagnosticEvents = 1_024,
         public int $socketReceiveBufferBytes = 4_194_304,
         public int $socketSendBufferBytes = 4_194_304,
+        ?TransportSecurityPolicy $security = null,
     ) {
+        $this->security = $security ?? new TransportSecurityPolicy();
         if ($this->bindAddress === '') {
             throw new InvalidArgumentException('Bind address cannot be empty.');
         }

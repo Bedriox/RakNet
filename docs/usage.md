@@ -5,6 +5,7 @@ Bedriox/RakNet provides discovery, offline negotiation, and a bounded connected 
 ## Configuration
 
 ```php
+use Bedriox\RakNet\Security\TransportSecurityPolicy;
 use Bedriox\RakNet\TransportConfig;
 
 $config = new TransportConfig(
@@ -20,6 +21,7 @@ $config = new TransportConfig(
     maximumHandshakeDiagnosticEvents: 1024,
     sessionPingIntervalMilliseconds: 5000,
     sessionIdleTimeoutMilliseconds: 30000,
+    security: new TransportSecurityPolicy(),
 );
 ```
 
@@ -51,6 +53,22 @@ Call `poll()` frequently from an owning event loop. Its optional batch limit is 
 Timestamps and locally generated server GUIDs are restricted to nonnegative PHP integers. Client GUIDs preserve the complete 64-bit wire pattern; GUIDs with bit 63 set appear as negative PHP integers. Use `updateDiscoveryStatus()` to atomically replace the opaque snapshot and its open-connections response policy; the separately bound server GUID remains unchanged.
 
 `acceptingConnections` controls only whether ping-open-connections (`0x02`) receives a pong. Standard unconnected ping (`0x01`) continues to receive the current payload. The application must update this policy together with any capacity fields it encodes in its own payload.
+
+The default security policy is intended for a public server and applies bounded global, unauthenticated-address, connected-endpoint, handshake, and malformed-input controls. Applications may supply a different immutable `TransportSecurityPolicy` through `TransportConfig`; disabling automatic blocking leaves accounting and packet dropping enabled but prevents temporary address blocks.
+
+Operational visibility and explicit operator controls are available without exposing packet bodies:
+
+```php
+$snapshot = $server->securitySnapshot();
+echo $snapshot->acceptedDatagrams;
+echo $snapshot->droppedDatagrams;
+echo $snapshot->activeBlocks;
+
+$server->blockAddress('203.0.113.20', 60);
+$server->unblockAddress('203.0.113.20');
+```
+
+Snapshots contain aggregate counters only. A block applies to an observed remote address and expires automatically; connected sessions sharing an address otherwise keep independent rate budgets.
 
 ## Offline negotiation result
 

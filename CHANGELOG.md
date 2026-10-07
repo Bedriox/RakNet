@@ -6,6 +6,7 @@ All notable changes to Bedriox/RakNet are documented here. The project follows [
 
 ### Added
 
+- Bounded transport admission, temporary address blocking, malformed-input escalation, shared-address-safe connected limits, and aggregate security metrics.
 - Established-session idle expiry with periodic connected pings; inactive peers no longer retain a player identity indefinitely.
 
 ### Fixed
