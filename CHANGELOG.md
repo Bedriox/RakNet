@@ -11,6 +11,7 @@ All notable changes to Bedriox/RakNet are documented here. The project follows [
 
 ### Fixed
 
+- Aligned the default established-session inactivity timeout with the 10-second Bedrock server baseline.
 - Isolate connected-session tick failures to the affected endpoint so one
   saturated or invalid session cannot stop the shared transport server.
 - Kept the shared Windows UDP listener alive when a late response to a closed peer reports `WSAECONNRESET`.

@@ -62,21 +62,21 @@ final class ConnectedControlSessionTest extends TestCase
         self::assertSame(5_000, ConnectedPing::decode($ping->payload)->timestamp);
         self::assertNull($control->heartbeatPayload(5_000_000_003));
 
-        self::assertNull($control->tick(29_999_999_999));
-        $control->receive(new ConnectedPong(5_000, 5_001)->encode(), 29_999_999_999);
-        self::assertNull($control->tick(59_999_999_998));
-        self::assertSame(SessionCloseReason::IdleTimeout, $control->tick(59_999_999_999));
+        self::assertNull($control->tick(9_999_999_999));
+        $control->receive(new ConnectedPong(5_000, 5_001)->encode(), 9_999_999_999);
+        self::assertNull($control->tick(19_999_999_998));
+        self::assertSame(SessionCloseReason::IdleTimeout, $control->tick(19_999_999_999));
         self::assertTrue($control->isClosed());
     }
 
     public function testQuietReadySessionCanRemainAliveThroughConnectedPings(): void
     {
         $control = $this->readyControl();
-        foreach ([20_000_000_000, 40_000_000_000, 60_000_000_000] as $time) {
+        foreach ([8_000_000_000, 16_000_000_000, 24_000_000_000] as $time) {
             self::assertNull($control->tick($time));
             self::assertCount(1, $control->receive(new ConnectedPing(42)->encode(), $time)->outboundPayloads);
         }
-        self::assertNull($control->tick(80_000_000_000));
+        self::assertNull($control->tick(32_000_000_000));
     }
 
     public function testDeadlineAndDisconnectCloseIdempotently(): void

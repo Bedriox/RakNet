@@ -20,14 +20,14 @@ $config = new TransportConfig(
     maximumSessionEvents: 65535,
     maximumHandshakeDiagnosticEvents: 1024,
     sessionPingIntervalMilliseconds: 5000,
-    sessionIdleTimeoutMilliseconds: 30000,
+    sessionIdleTimeoutMilliseconds: 10000,
     security: new TransportSecurityPolicy(),
 );
 ```
 
 Construction throws `InvalidArgumentException` when any endpoint, MTU, session, handshake, received-payload, pending-output, lifecycle, or diagnostic limit is outside its documented range. `maximumSessionEvents` must be at least `maximumSessions`, guaranteeing room for shutdown events. Handshake diagnostics use an independent bounded queue and never consume lifecycle capacity. The pending-output byte limit must hold at least one complete UDP payload for the configured MTU and can never be below 548 bytes. Port `0` requests an ephemeral operating-system-assigned port and is intended for tests.
 
-Ready sessions receive a connected ping every five seconds by default. They close with `SessionCloseReason::IdleTimeout` after 30 seconds without valid inbound traffic; handshake expiry remains a separate close reason. The ping interval must be shorter than the idle timeout.
+Ready sessions receive a connected ping every five seconds by default. They close with `SessionCloseReason::IdleTimeout` after 10 seconds without valid inbound traffic; handshake expiry remains a separate close reason. The ping interval must be shorter than the idle timeout.
 
 ## Discovery server
 

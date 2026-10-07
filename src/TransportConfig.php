@@ -21,7 +21,7 @@ final readonly class TransportConfig
         public int $maximumSessions = 1_024,
         public int $maximumPendingHandshakes = 1_024,
         public int $handshakeTimeoutMilliseconds = 5_000,
-        public int $sessionIdleTimeoutMilliseconds = 30_000,
+        public int $sessionIdleTimeoutMilliseconds = 10_000,
         public int $sessionPingIntervalMilliseconds = 5_000,
         public int $connectedSessionMaintenanceIntervalMilliseconds = 10,
         public int $maximumReceivedPayloads = 4_096,

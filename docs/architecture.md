@@ -82,4 +82,4 @@ Each poll turn receives a bounded batch, transfers connected effects into global
 
 `sessionCount()` retains its allocated-transport meaning, while `readySessionCount()` and `isSessionReady()` expose the readiness gate. Lifecycle events are fixed-size immutable values in a bounded queue. Normal queue exhaustion removes the responsible session and surfaces failure. A separate bounded, best-effort handshake-diagnostic queue reports allowlisted pre-ready metadata without consuming lifecycle capacity or retaining packet bodies. `close()` deliberately replaces undrained lifecycle events with one observable `SERVER_CLOSED` event per formerly ready session; repeated close is idempotent and draining events remains valid afterward.
 
-Congestion control, established-session idle timeouts, IPv6 binding, and Bedrock protocol handling remain planned.
+Congestion control, IPv6 binding, and Bedrock protocol handling remain planned.

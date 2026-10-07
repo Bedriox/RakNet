@@ -30,7 +30,7 @@ final class ConnectedControlSession
     public function __construct(
         private readonly SessionInfo $session,
         private readonly int $deadlineNanoseconds,
-        private readonly int $idleTimeoutNanoseconds = 30_000_000_000,
+        private readonly int $idleTimeoutNanoseconds = 10_000_000_000,
         private readonly int $pingIntervalNanoseconds = 5_000_000_000,
     ) {
         if ($this->deadlineNanoseconds < 0) {
