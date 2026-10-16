@@ -54,7 +54,7 @@ Timestamps and locally generated server GUIDs are restricted to nonnegative PHP 
 
 `acceptingConnections` controls only whether ping-open-connections (`0x02`) receives a pong. Standard unconnected ping (`0x01`) continues to receive the current payload. The application must update this policy together with any capacity fields it encodes in its own payload.
 
-The default security policy is intended for a public server and applies bounded global, unauthenticated-address, connected-endpoint, handshake, and malformed-input controls. Applications may supply a different immutable `TransportSecurityPolicy` through `TransportConfig`; disabling automatic blocking leaves accounting and packet dropping enabled but prevents temporary address blocks.
+The default security policy is intended for a public server and applies bounded global, unauthenticated-address, connected-endpoint, handshake, and malformed-input controls. Applications may supply a different immutable `TransportSecurityPolicy` through `TransportConfig`; disabling automatic blocking leaves accounting and packet dropping enabled but prevents temporary connected-endpoint blocks.
 
 Operational visibility and explicit operator controls are available without exposing packet bodies:
 
@@ -68,7 +68,7 @@ $server->blockAddress('203.0.113.20', 60);
 $server->unblockAddress('203.0.113.20');
 ```
 
-Snapshots contain aggregate counters only. A block applies to an observed remote address and expires automatically; connected sessions sharing an address otherwise keep independent rate budgets.
+Snapshots contain aggregate counters only. Automatic blocks apply to the exact observed address-and-port endpoint only after malformed connected transport input. Unauthenticated excess and malformed input are silently dropped and counted without creating a block, so another client behind the same address remains eligible. `blockAddress()` remains an explicit operator control that applies to every endpoint on that address until its bounded duration expires or it is removed with `unblockAddress()`.
 
 ## Offline negotiation result
 

@@ -9,6 +9,7 @@ use Bedriox\RakNet\DiscoveryStatus;
 use Bedriox\RakNet\Exception\TransportException;
 use Bedriox\RakNet\Protocol\UnconnectedPing;
 use Bedriox\RakNet\Protocol\UnconnectedPong;
+use Bedriox\RakNet\Security\TransportSecurityPolicy;
 use Bedriox\RakNet\Tests\MutableClock;
 use Bedriox\RakNet\TransportConfig;
 use PHPUnit\Framework\TestCase;
@@ -114,6 +115,43 @@ final class DiscoveryServerTest extends TestCase
 
         $pong = $this->exchangePing(778, 124);
         self::assertSame(778, $pong->timestamp);
+    }
+
+    public function testMalformedEndpointCannotBlockCleanPeerOnSameAddress(): void
+    {
+        $this->server = DiscoveryServer::bind(
+            new TransportConfig(
+                bindAddress: '127.0.0.1',
+                port: 0,
+                security: new TransportSecurityPolicy(malformedThreshold: 1),
+            ),
+            self::SERVER_GUID,
+            new DiscoveryStatus(self::STATUS),
+        );
+        $malformed = substr(new UnconnectedPing(1, 2)->encode(), 0, -1);
+        self::assertSame(\strlen($malformed), socket_sendto(
+            $this->client(),
+            $malformed,
+            \strlen($malformed),
+            0,
+            '127.0.0.1',
+            $this->server()->localPort(),
+        ));
+        self::assertSame(1, $this->awaitHandled(1));
+        self::assertSame(0, $this->server()->securitySnapshot()->activeBlocks);
+
+        $cleanPeer = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+        if (!$cleanPeer instanceof Socket) {
+            self::fail('Unable to create clean loopback peer.');
+        }
+        try {
+            self::assertTrue(socket_set_nonblock($cleanPeer));
+            $response = $this->exchangeOnSocket($cleanPeer, new UnconnectedPing(778, 124)->encode());
+            self::assertIsString($response);
+            self::assertSame(778, UnconnectedPong::decode($response)->timestamp);
+        } finally {
+            socket_close($cleanPeer);
+        }
     }
 
     public function testClosedDiscoveryPeerDoesNotPoisonSharedSocketOnWindows(): void

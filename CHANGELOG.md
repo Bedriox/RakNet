@@ -6,7 +6,7 @@ All notable changes to Bedriox/RakNet are documented here. The project follows [
 
 ### Added
 
-- Bounded transport admission, temporary address blocking, malformed-input escalation, shared-address-safe connected limits, and aggregate security metrics.
+- Bounded transport admission, explicit address blocking, malformed connected-endpoint escalation, shared-address-safe connected limits, and aggregate security metrics.
 - Established-session idle expiry with periodic connected pings; inactive peers no longer retain a player identity indefinitely.
 
 ### Fixed
@@ -15,6 +15,7 @@ All notable changes to Bedriox/RakNet are documented here. The project follows [
 - Isolate connected-session tick failures to the affected endpoint so one
   saturated or invalid session cannot stop the shared transport server.
 - Kept the shared Windows UDP listener alive when a late response to a closed peer reports `WSAECONNRESET`.
+- Prevented unauthenticated floods and malformed datagrams from automatically blocking other clients that share the same address.
 
 ## [0.1.0-alpha.1] - 2026-09-17
 

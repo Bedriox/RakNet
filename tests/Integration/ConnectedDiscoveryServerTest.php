@@ -15,6 +15,8 @@ use Bedriox\RakNet\Protocol\ConnectedDatagram;
 use Bedriox\RakNet\Protocol\EncapsulatedFrame;
 use Bedriox\RakNet\Protocol\Reliability;
 use Bedriox\RakNet\Protocol\SequenceRange;
+use Bedriox\RakNet\Protocol\UnconnectedPing;
+use Bedriox\RakNet\Protocol\UnconnectedPong;
 use Bedriox\RakNet\SessionClosedEvent;
 use Bedriox\RakNet\SessionCloseReason;
 use Bedriox\RakNet\SessionOpenedEvent;
@@ -183,6 +185,46 @@ final class ConnectedDiscoveryServerTest extends TestCase
         foreach ($outbound as $datagram) {
             self::assertLessThanOrEqual(548, \strlen($datagram));
             self::assertSame(ConnectedDatagram::VALID_FLAG, \ord($datagram[0]));
+        }
+    }
+
+    public function testMalformedConnectedEndpointDoesNotBlockCleanPeerOnSameAddress(): void
+    {
+        $this->startServer();
+        foreach ([777, 778, 779] as $clientGuid) {
+            $this->handshake(clientGuid: $clientGuid);
+            $this->sendToServer("\x80" . str_repeat("\x00", 548));
+            self::assertSame(1, $this->awaitHandled(1));
+            self::assertSame(0, $this->server()->sessionCount());
+        }
+        self::assertSame(1, $this->server()->securitySnapshot()->activeBlocks);
+
+        $cleanPeer = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+        if (!$cleanPeer instanceof Socket) {
+            self::fail('Unable to create clean loopback peer.');
+        }
+        try {
+            self::assertTrue(socket_set_nonblock($cleanPeer));
+            $ping = new UnconnectedPing(780, 124);
+            $wire = $ping->encode();
+            self::assertSame(\strlen($wire), socket_sendto(
+                $cleanPeer,
+                $wire,
+                \strlen($wire),
+                0,
+                '127.0.0.1',
+                $this->server()->localPort(),
+            ));
+            self::assertSame(1, $this->awaitHandled(1));
+            $read = [$cleanPeer];
+            $write = null;
+            $except = null;
+            self::assertSame(1, socket_select($read, $write, $except, 0, 500_000));
+            $response = socket_read($cleanPeer, 1_492, PHP_BINARY_READ);
+            self::assertIsString($response);
+            self::assertSame(780, UnconnectedPong::decode($response)->timestamp);
+        } finally {
+            socket_close($cleanPeer);
         }
     }
 

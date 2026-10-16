@@ -17,13 +17,16 @@ final class TransportAbuseGuard
     private array $endpoints = [];
 
     /** @var array<string, array{until: int, offenses: int, last: int}> */
-    private array $blocks = [];
+    private array $addressBlocks = [];
 
     /** @var array<string, array{offenses: int, last: int}> */
-    private array $blockHistory = [];
+    private array $endpointBlockHistory = [];
 
     /** @var array<string, array{count: int, last: int}> */
-    private array $malformed = [];
+    private array $malformedEndpoints = [];
+
+    /** @var array<string, array{until: int, offenses: int, last: int}> */
+    private array $endpointBlocks = [];
 
     private TokenBucket $globalDatagrams;
     private TokenBucket $globalBytes;
@@ -52,7 +55,7 @@ final class TransportAbuseGuard
         if (!$this->policy->enabled) {
             return AdmissionDecision::ALLOW;
         }
-        if (isset($this->blocks[$address])) {
+        if (isset($this->addressBlocks[$address]) || isset($this->endpointBlocks[$endpoint])) {
             ++$this->droppedDatagrams;
 
             return AdmissionDecision::BLOCK;
@@ -92,33 +95,35 @@ final class TransportAbuseGuard
         }
         ++$this->droppedDatagrams;
         ++$this->rateLimitedEndpoints;
-        if ($this->policy->automaticBlocking) {
-            $this->block($address, $now);
-
-            return AdmissionDecision::BLOCK;
-        }
-
         return AdmissionDecision::DROP;
     }
 
-    public function malformed(string $address, bool $severe = false): bool
+    public function malformed(string $address, ?int $port = null, bool $severe = false): bool
     {
         $address = self::normalizeAddress($address);
         $now = $this->clock->nowNanoseconds();
         ++$this->malformedDatagrams;
-        $state = $this->malformed[$address] ?? ['count' => 0, 'last' => $now];
+        if ($port === null) {
+            return false;
+        }
+        if ($port < 1 || $port > 65_535) {
+            throw new InvalidArgumentException('Port is outside the UDP range.');
+        }
+
+        $endpoint = $address . ':' . $port;
+        $state = $this->malformedEndpoints[$endpoint] ?? ['count' => 0, 'last' => $now];
         if ($now - $state['last'] > $this->policy->escalationWindowSeconds * 1_000_000_000) {
             $state['count'] = 0;
         }
         ++$state['count'];
         $state['last'] = $now;
-        $this->malformed[$address] = $state;
-        $this->trim($this->malformed, $this->policy->maximumTrackedAddresses);
+        $this->malformedEndpoints[$endpoint] = $state;
+        $this->trim($this->malformedEndpoints, $this->policy->maximumTrackedEndpoints);
         if (!$this->policy->enabled || !$this->policy->automaticBlocking
             || (!$severe && $state['count'] < $this->policy->malformedThreshold)) {
             return false;
         }
-        $this->block($address, $now);
+        $this->blockEndpoint($endpoint, $now);
 
         return true;
     }
@@ -131,8 +136,8 @@ final class TransportAbuseGuard
         if ($seconds < 1 || $seconds > $this->policy->maximumBlockSeconds) {
             throw new InvalidArgumentException('Block duration is outside the configured range.');
         }
-        $existing = $this->blocks[$address] ?? ['offenses' => 0, 'last' => $now, 'until' => 0];
-        $this->blocks[$address] = [
+        $existing = $this->addressBlocks[$address] ?? ['offenses' => 0, 'last' => $now, 'until' => 0];
+        $this->addressBlocks[$address] = [
             'until' => $now + $seconds * 1_000_000_000,
             'offenses' => $existing['offenses'] + 1,
             'last' => $now,
@@ -142,7 +147,7 @@ final class TransportAbuseGuard
 
     public function unblockAddress(string $address): void
     {
-        unset($this->blocks[self::normalizeAddress($address)]);
+        unset($this->addressBlocks[self::normalizeAddress($address)]);
     }
 
     public function snapshot(): TransportSecuritySnapshot
@@ -156,7 +161,7 @@ final class TransportAbuseGuard
             $this->rateLimitedEndpoints,
             $this->malformedDatagrams,
             $this->temporaryBlocks,
-            \count($this->blocks),
+            \count($this->addressBlocks) + \count($this->endpointBlocks),
             \count($this->addresses),
             \count($this->endpoints),
         );
@@ -183,26 +188,32 @@ final class TransportAbuseGuard
         ];
     }
 
-    private function block(string $address, int $now): void
+    private function blockEndpoint(string $endpoint, int $now): void
     {
-        $existing = $this->blockHistory[$address] ?? null;
+        $existing = $this->endpointBlockHistory[$endpoint] ?? null;
         $offenses = 1;
         if ($existing !== null && $now - $existing['last'] <= $this->policy->escalationWindowSeconds * 1_000_000_000) {
             $offenses = min(31, $existing['offenses'] + 1);
         }
         $multiplier = 1 << min(10, $offenses - 1);
         $seconds = min($this->policy->maximumBlockSeconds, $this->policy->baseBlockSeconds * $multiplier);
-        $this->blocks[$address] = ['until' => $now + $seconds * 1_000_000_000, 'offenses' => $offenses, 'last' => $now];
-        $this->blockHistory[$address] = ['offenses' => $offenses, 'last' => $now];
-        $this->trim($this->blockHistory, $this->policy->maximumTrackedAddresses);
+        $this->endpointBlocks[$endpoint] = ['until' => $now + $seconds * 1_000_000_000, 'offenses' => $offenses, 'last' => $now];
+        $this->endpointBlockHistory[$endpoint] = ['offenses' => $offenses, 'last' => $now];
+        $this->trim($this->endpointBlocks, $this->policy->maximumTrackedEndpoints);
+        $this->trim($this->endpointBlockHistory, $this->policy->maximumTrackedEndpoints);
         ++$this->temporaryBlocks;
     }
 
     private function expire(int $now): void
     {
-        foreach ($this->blocks as $address => $state) {
+        foreach ($this->addressBlocks as $address => $state) {
             if ($state['until'] <= $now) {
-                unset($this->blocks[$address]);
+                unset($this->addressBlocks[$address]);
+            }
+        }
+        foreach ($this->endpointBlocks as $endpoint => $state) {
+            if ($state['until'] <= $now) {
+                unset($this->endpointBlocks[$endpoint]);
             }
         }
         $stale = $now - $this->policy->escalationWindowSeconds * 1_000_000_000;
@@ -216,14 +227,14 @@ final class TransportAbuseGuard
                 unset($this->endpoints[$key]);
             }
         }
-        foreach ($this->malformed as $key => $state) {
+        foreach ($this->malformedEndpoints as $key => $state) {
             if ($state['last'] < $stale) {
-                unset($this->malformed[$key]);
+                unset($this->malformedEndpoints[$key]);
             }
         }
-        foreach ($this->blockHistory as $key => $state) {
+        foreach ($this->endpointBlockHistory as $key => $state) {
             if ($state['last'] < $stale) {
-                unset($this->blockHistory[$key]);
+                unset($this->endpointBlockHistory[$key]);
             }
         }
     }

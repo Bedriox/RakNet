@@ -402,7 +402,7 @@ final class DiscoveryServer
 
                 $result = $this->handleOfflineDatagram($payload, $sourceAddress, $sourcePort);
             } catch (CodecException|InvalidArgumentException) {
-                $this->abuseGuard->malformed($sourceAddress);
+                $this->abuseGuard->malformed($sourceAddress, $connectedInput ? $sourcePort : null);
                 if ($connectedInput) {
                     $this->appendHandshakeDiagnosticFor(
                         $key,
@@ -418,7 +418,7 @@ final class DiscoveryServer
                 }
                 continue;
             } catch (UnexpectedValueException $exception) {
-                $this->abuseGuard->malformed($sourceAddress, true);
+                $this->abuseGuard->malformed($sourceAddress, $connectedInput ? $sourcePort : null, $connectedInput);
                 if ($connectedInput) {
                     $this->appendHandshakeDiagnosticFor(
                         $key,

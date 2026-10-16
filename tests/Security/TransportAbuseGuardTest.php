@@ -30,7 +30,7 @@ final class TransportAbuseGuardTest extends TestCase
         self::assertSame(0, $guard->snapshot()->activeBlocks);
     }
 
-    public function testUnauthenticatedFloodBlocksThenExpires(): void
+    public function testUnauthenticatedFloodDropsWithoutBlockingSiblingEndpoint(): void
     {
         $clock = new MutableClock();
         $guard = new TransportAbuseGuard(new TransportSecurityPolicy(
@@ -40,8 +40,9 @@ final class TransportAbuseGuardTest extends TestCase
         ), $clock);
 
         self::assertSame(AdmissionDecision::ALLOW, $guard->admit('127.0.0.1', 10_000, 1, false, false));
-        self::assertSame(AdmissionDecision::BLOCK, $guard->admit('127.0.0.1', 10_001, 1, false, false));
-        self::assertSame(AdmissionDecision::BLOCK, $guard->admit('127.0.0.1', 10_002, 1, false, false));
+        self::assertSame(AdmissionDecision::DROP, $guard->admit('127.0.0.1', 10_001, 1, false, false));
+        self::assertSame(AdmissionDecision::DROP, $guard->admit('127.0.0.1', 10_002, 1, false, false));
+        self::assertSame(0, $guard->snapshot()->activeBlocks);
         $clock->advanceMilliseconds(10_001);
         self::assertSame(AdmissionDecision::ALLOW, $guard->admit('127.0.0.1', 10_003, 1, false, false));
     }
@@ -60,15 +61,67 @@ final class TransportAbuseGuardTest extends TestCase
         self::assertSame(0, $guard->snapshot()->activeBlocks);
     }
 
-    public function testMalformedThresholdCreatesTemporaryAddressBlock(): void
+    public function testUnauthenticatedMalformedTrafficNeverCreatesAutomaticBlock(): void
     {
         $clock = new MutableClock();
         $guard = new TransportAbuseGuard(new TransportSecurityPolicy(malformedThreshold: 3), $clock);
 
         self::assertFalse($guard->malformed('127.0.0.1'));
         self::assertFalse($guard->malformed('127.0.0.1'));
-        self::assertTrue($guard->malformed('127.0.0.1'));
+        self::assertFalse($guard->malformed('127.0.0.1'));
+        self::assertSame(AdmissionDecision::ALLOW, $guard->admit('127.0.0.1', 10_000, 1, false, false));
+        self::assertSame(0, $guard->snapshot()->activeBlocks);
+    }
+
+    public function testConnectedMalformedBlockIsScopedToObservedEndpoint(): void
+    {
+        $clock = new MutableClock();
+        $guard = new TransportAbuseGuard(new TransportSecurityPolicy(malformedThreshold: 3), $clock);
+
+        self::assertTrue($guard->malformed('127.0.0.1', 10_000, true));
         self::assertSame(AdmissionDecision::BLOCK, $guard->admit('127.0.0.1', 10_000, 1, false, false));
+        self::assertSame(AdmissionDecision::ALLOW, $guard->admit('127.0.0.1', 10_001, 1, false, false));
+        self::assertSame(1, $guard->snapshot()->activeBlocks);
+    }
+
+    public function testOrdinaryConnectedMalformedInputEscalatesAtConfiguredThreshold(): void
+    {
+        $clock = new MutableClock();
+        $guard = new TransportAbuseGuard(new TransportSecurityPolicy(malformedThreshold: 3), $clock);
+
+        self::assertFalse($guard->malformed('127.0.0.1', 10_000));
+        self::assertFalse($guard->malformed('127.0.0.1', 10_000));
+        self::assertTrue($guard->malformed('127.0.0.1', 10_000));
+        self::assertSame(AdmissionDecision::BLOCK, $guard->admit('127.0.0.1', 10_000, 1, false, false));
+        self::assertSame(AdmissionDecision::ALLOW, $guard->admit('127.0.0.1', 10_001, 1, false, false));
+    }
+
+    public function testAutomaticEndpointBlocksStayBounded(): void
+    {
+        $clock = new MutableClock();
+        $guard = new TransportAbuseGuard(new TransportSecurityPolicy(
+            maximumTrackedAddresses: 2,
+            maximumTrackedEndpoints: 2,
+        ), $clock);
+
+        foreach ([10_000, 10_001, 10_002] as $port) {
+            self::assertTrue($guard->malformed('127.0.0.1', $port, true));
+            $clock->advanceMilliseconds(1);
+        }
+        self::assertSame(2, $guard->snapshot()->activeBlocks);
+        self::assertSame(AdmissionDecision::ALLOW, $guard->admit('127.0.0.1', 10_000, 1, false, false));
+    }
+
+    public function testManualAddressBlockStillAppliesToEveryEndpoint(): void
+    {
+        $clock = new MutableClock();
+        $guard = new TransportAbuseGuard(new TransportSecurityPolicy(), $clock);
+
+        $guard->blockAddress('127.0.0.1', 10);
+        self::assertSame(AdmissionDecision::BLOCK, $guard->admit('127.0.0.1', 10_000, 1, false, false));
+        self::assertSame(AdmissionDecision::BLOCK, $guard->admit('127.0.0.1', 10_001, 1, true, false));
+        $guard->unblockAddress('127.0.0.1');
+        self::assertSame(AdmissionDecision::ALLOW, $guard->admit('127.0.0.1', 10_002, 1, false, false));
     }
 
     public function testTrackedStateIsBounded(): void
