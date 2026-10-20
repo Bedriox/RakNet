@@ -46,6 +46,14 @@ $server->poll(); // handles at most 64 waiting datagrams without blocking
 $server->close();
 ```
 
+Applications with a narrower network trust boundary may pass an
+`EndpointAdmissionPolicy` as the named `endpointAdmissionPolicy` argument to
+`bind()`. The policy receives only the observed IPv4 source address and port. A
+rejection is silent on the wire, clears pending state for that endpoint, and is
+available through `drainEndpointAdmissionRejections()`. The rejection batch is
+bounded and includes a dropped count so an application can emit a rate-limited
+summary without retaining attacker-controlled traffic or packet contents.
+
 Call `poll()` frequently from an owning event loop. Its optional batch limit is constrained to `1..1024`. It returns the number of received datagrams inspected, including malformed datagrams. On Windows, a late ICMP port-unreachable response for an earlier UDP send is cleared as a recoverable socket notification; it does not count as a received datagram or close the shared listener. Calling `close()` repeatedly is safe; polling after close throws `TransportException`.
 
 `DiscoveryStatus` treats the application payload as opaque. It requires valid UTF-8 and between 1 and 352 bytes but does not parse, sanitize, infer, or generate application fields. The application protocol owns its delimiters, text policy, versions, capacity values, and other semantics.

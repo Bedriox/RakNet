@@ -23,6 +23,7 @@ application payload
 ## Implemented components
 
 - `DiscoveryServer`: non-blocking UDP I/O, discovery, negotiation, session tables, routing, and adapter queues.
+- `RakNetClient`: one non-blocking outbound connection, including offline negotiation, connected readiness, retries, and bounded receive queues.
 - `ConnectedControlSession`: readiness handshake and transport-owned control messages.
 - `ConnectedSession`: one peer's bounded connected transport state and effects.
 - `Reliability`: sequence numbers, ordering channels, ACK/NACK ranges, sent history, and retransmission.
@@ -77,6 +78,8 @@ The final `0x13` body is deliberately opaque at the readiness boundary. Implemen
 Connected ping `0x00` is consumed and answered with connected pong `0x03` in every live phase. Pong `0x03`, handshake replays, and disconnect notification `0x15` are also transport-owned and never reach the application. The online phase shares the configured monotonic handshake deadline. Timeout, malformed/out-of-state control input, queue exhaustion, explicit removal, remote disconnect, and socket failure release all endpoint-owned state.
 
 The central dispatcher is the only path from datagram identifiers to handlers. `TransportConfig` provides immutable socket/state limits. After Reply 2 is written, `DiscoveryServer` owns one reliability session and one control session beside immutable `SessionInfo`. Exact ACK (`0xc0`) and NACK (`0xa0`) identifiers take priority; otherwise, all connected-data flag combinations accepted by `ConnectedDatagram::acceptsFlags()` route from that observed endpoint into the connected engine. The server exposes endpoint-keyed raw payload, lifecycle, and receive-drain APIs; it never interprets application bytes as Bedrock packets.
+
+`RakNetClient` owns one UDP socket and one remote endpoint from construction through close. Its `ClientState` advances through the two offline replies and connected acceptance before exposing readiness. The same owning event loop polls the client, drains bounded application payloads, and advances retransmission; datagrams from any endpoint other than the configured remote are ignored.
 
 Each poll turn receives a bounded batch, transfers connected effects into globally bounded adapter queues, flushes adapter-owned complete datagrams, and advances sessions whose prior output is no longer blocked. Would-block retains the exact datagram and pauses further ticking for that endpoint. Partial or permanent socket-send failure clears and removes the engine, session metadata, GUID index, and pending output atomically.
 

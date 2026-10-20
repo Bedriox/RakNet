@@ -8,7 +8,7 @@
 | PHP extension | `sockets` |
 | Operating systems | Windows x86-64, Linux x86-64 |
 | Composer | 2.x |
-| RakNet wire compatibility | Protocol 11 IPv4 discovery, offline and online control negotiation with state-bound opaque final acknowledgement bodies, and bounded connected modes 0, 2, and 3 |
+| RakNet wire compatibility | Protocol 11 IPv4 server and outbound-client offline/online negotiation, state-bound opaque final acknowledgement bodies, and bounded connected modes 0, 2, and 3 |
 | Application discovery payload | Opaque valid UTF-8, 1 through 352 bytes |
 | Minecraft Bedrock versions | No Bedrock advertisement, login, or game-packet semantics |
 

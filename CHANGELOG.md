@@ -6,6 +6,8 @@ All notable changes to Bedriox/RakNet are documented here. The project follows [
 
 ### Added
 
+- An optional application-owned endpoint admission policy that rejects untrusted peers before RakNet offline-session allocation and exposes only bounded, drainable rejection metadata.
+- A bounded non-blocking outbound RakNet client with offline negotiation, connected handshake, reliable ordered traffic, retry handling, and loopback qualification.
 - Bounded transport admission, explicit address blocking, malformed connected-endpoint escalation, shared-address-safe connected limits, and aggregate security metrics.
 - Established-session idle expiry with periodic connected pings; inactive peers no longer retain a player identity indefinitely.
 

@@ -53,6 +53,18 @@ while (true) {
 }
 ```
 
+Open one outbound connection from the same event loop:
+
+```php
+use Bedriox\RakNet\ClientConfig;
+use Bedriox\RakNet\RakNetClient;
+
+$client = RakNetClient::connect(new ClientConfig('127.0.0.1', 19132), random_int(1, PHP_INT_MAX));
+while (!$client->isReady()) {
+    $client->poll();
+}
+```
+
 The status payload is opaque to RakNet. Applications own its format and semantics and must encode it before constructing `DiscoveryStatus`. `poll()` handles RakNet protocol 11 offline and connected-control negotiation, routes ready endpoint traffic, advances retries, and flushes complete UDP datagrams. Applications must drain lifecycle events and only attach protocol state after `SessionOpenedEvent`.
 
 ## Documentation

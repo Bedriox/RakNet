@@ -16,6 +16,14 @@ Every datagram, address, timing value, and session transition is attacker-contro
 
 Defaults must be safe for an internet-facing host. Raising limits must be explicit. Parser errors close or discard the smallest affected scope without crashing the process.
 
+An embedding application may provide an `EndpointAdmissionPolicy`. It runs for
+offline connection requests after the transport abuse guard but before pending
+handshake or session allocation. Rejected requests receive no response. RakNet
+retains at most 1024 rejection events between drains and then reports only an
+aggregate dropped count; it never retains packet bodies or application
+authentication material in this diagnostic path. The default policy allows all
+endpoints, preserving public-server behavior.
+
 The discovery slice reads at most the configured MTU per UDP datagram, accepts only the exact 33-byte shape for unconnected ping identifiers `0x01` and `0x02`, validates the 16-byte offline magic with `hash_equals()`, requires a valid UTF-8 status payload of 1 through 352 bytes, and bounds each `poll()` batch. The full pong is therefore at most 387 bytes. Identifier `0x02` receives no response when the application's explicit `acceptingConnections` policy is false.
 
 Discovery is an unauthenticated UDP amplification surface: the maximum response is larger than its 33-byte request. Unknown, policy-disabled `0x02`, bad-magic, and malformed datagrams receive no response, and status size is deliberately kept below common MTUs and below 400 total response bytes. A bounded admission guard applies global byte/datagram budgets, unauthenticated per-address budgets, handshake budgets, and malformed-datagram accounting before a packet reaches protocol decoding. Unauthenticated excess and malformed input are silently dropped and never create an automatic address block.

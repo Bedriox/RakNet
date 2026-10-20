@@ -8,6 +8,7 @@ use Bedriox\RakNet\ConnectedHandshakeRejectionReason;
 use Bedriox\RakNet\ConnectedHandshakeStage;
 use Bedriox\RakNet\DiscoveryServer;
 use Bedriox\RakNet\DiscoveryStatus;
+use Bedriox\RakNet\EndpointAdmissionPolicy;
 use Bedriox\RakNet\Exception\TransportException;
 use Bedriox\RakNet\Protocol\AckPacket;
 use Bedriox\RakNet\Protocol\BitPayload;
@@ -41,6 +42,31 @@ final class ConnectedDiscoveryServerTest extends TestCase
         if ($this->client instanceof Socket) {
             socket_close($this->client);
         }
+    }
+
+    public function testEndpointAdmissionPolicyRejectsBeforeOfflineSessionAllocation(): void
+    {
+        $policy = new readonly class implements EndpointAdmissionPolicy {
+            public function allows(string $remoteAddress, int $remotePort): bool
+            {
+                return false;
+            }
+        };
+        $this->startServer(endpointAdmissionPolicy: $policy);
+        $request1 = "\x05" . self::MAGIC . "\x0b" . str_repeat("\x00", 530);
+
+        $this->sendToServer($request1);
+        self::assertSame(1, $this->awaitHandled(1));
+
+        self::assertFalse($this->receiveWhenReadable(20_000));
+        self::assertSame(0, $this->server()->pendingHandshakeCount());
+        self::assertSame(0, $this->server()->sessionCount());
+        $batch = $this->server()->drainEndpointAdmissionRejections();
+        self::assertSame(0, $batch->droppedEventCount);
+        self::assertCount(1, $batch->events);
+        self::assertSame('127.0.0.1', $batch->events[0]->remoteAddress);
+        self::assertSame($this->clientPort(), $batch->events[0]->remotePort);
+        self::assertSame([], $this->server()->drainEndpointAdmissionRejections()->events);
     }
 
     public function testHighBitClientGuidCompletesOnlineHandshake(): void
@@ -627,8 +653,10 @@ final class ConnectedDiscoveryServerTest extends TestCase
         self::assertSame([], $this->server()->drainSessionEvents());
     }
 
-    private function startServer(?TransportConfig $config = null): void
-    {
+    private function startServer(
+        ?TransportConfig $config = null,
+        ?EndpointAdmissionPolicy $endpointAdmissionPolicy = null,
+    ): void {
         $this->clock = new MutableClock();
         $status = new DiscoveryStatus('opaque connected-test status');
         $this->server = DiscoveryServer::bind(
@@ -636,6 +664,7 @@ final class ConnectedDiscoveryServerTest extends TestCase
             self::SERVER_GUID,
             $status,
             clock: $this->clock,
+            endpointAdmissionPolicy: $endpointAdmissionPolicy,
         );
     }
 

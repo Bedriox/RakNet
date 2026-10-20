@@ -34,6 +34,7 @@ final class DiscoveryServer
     public const int DEFAULT_RAKNET_PROTOCOL_VERSION = 11;
     public const int MAXIMUM_IPV4_PROBE_MTU = OpenConnectionRequest1::MAXIMUM_MTU;
     public const int MAXIMUM_DATAGRAMS_PER_POLL = 4_096;
+    private const int MAXIMUM_ADMISSION_REJECTION_EVENTS = 1_024;
 
     private bool $closed = false;
 
@@ -59,6 +60,11 @@ final class DiscoveryServer
     private array $handshakeDiagnostics = [];
 
     private int $droppedHandshakeDiagnosticCount = 0;
+
+    /** @var list<EndpointAdmissionRejectedEvent> */
+    private array $admissionRejections = [];
+
+    private int $droppedAdmissionRejectionCount = 0;
 
     /** @var list<ReceivedPayload> */
     private array $receivedPayloads = [];
@@ -100,6 +106,7 @@ final class DiscoveryServer
         private readonly int $maximumSessionEvents,
         private readonly int $maximumHandshakeDiagnosticEvents,
         TransportAbuseGuard $abuseGuard,
+        private readonly EndpointAdmissionPolicy $endpointAdmissionPolicy,
     ) {
         $this->abuseGuard = $abuseGuard;
     }
@@ -110,6 +117,7 @@ final class DiscoveryServer
         DiscoveryStatus $discoveryStatus,
         int $rakNetProtocolVersion = self::DEFAULT_RAKNET_PROTOCOL_VERSION,
         ?Clock $clock = null,
+        ?EndpointAdmissionPolicy $endpointAdmissionPolicy = null,
     ): self {
         if ($serverGuid < 0) {
             throw new TransportException('Server GUID must be a nonnegative 63-bit integer.');
@@ -178,6 +186,7 @@ final class DiscoveryServer
                 $config->maximumSessionEvents,
                 $config->maximumHandshakeDiagnosticEvents,
                 new TransportAbuseGuard($config->security, $resolvedClock),
+                $endpointAdmissionPolicy ?? new AllowAllEndpointAdmissionPolicy(),
             );
         } catch (\Throwable $exception) {
             socket_close($socket);
@@ -322,6 +331,18 @@ final class DiscoveryServer
         return $batch;
     }
 
+    public function drainEndpointAdmissionRejections(): EndpointAdmissionRejectionBatch
+    {
+        $batch = new EndpointAdmissionRejectionBatch(
+            $this->admissionRejections,
+            $this->droppedAdmissionRejectionCount,
+        );
+        $this->admissionRejections = [];
+        $this->droppedAdmissionRejectionCount = 0;
+
+        return $batch;
+    }
+
     public function poll(int $maximumDatagrams = 64): int
     {
         if ($this->closed) {
@@ -383,6 +404,14 @@ final class DiscoveryServer
                     $packetId === OpenConnectionRequest1::ID || $packetId === OpenConnectionRequest2::ID,
                 );
                 if ($admission !== AdmissionDecision::ALLOW) {
+                    continue;
+                }
+                if (
+                    ($packetId === OpenConnectionRequest1::ID || $packetId === OpenConnectionRequest2::ID)
+                    && !$this->endpointAdmissionPolicy->allows($sourceAddress, $sourcePort)
+                ) {
+                    unset($this->pendingHandshakes[$key]);
+                    $this->appendEndpointAdmissionRejection($sourceAddress, $sourcePort);
                     continue;
                 }
                 $isControlPacket = $packetId === AcknowledgementCodec::ACK_ID
@@ -504,6 +533,8 @@ final class DiscoveryServer
         $this->pendingOutboundDatagramCount = 0;
         $this->pendingOutboundBytes = 0;
         $this->connectedSessionsDue = [];
+        $this->admissionRejections = [];
+        $this->droppedAdmissionRejectionCount = 0;
         $this->sessionEvents = $closing;
         socket_close($this->socket);
         $this->closed = true;
@@ -897,6 +928,19 @@ final class DiscoveryServer
             throw new OverflowException('Session lifecycle event queue limit reached.');
         }
         $this->sessionEvents[] = $event;
+    }
+
+    private function appendEndpointAdmissionRejection(string $remoteAddress, int $remotePort): void
+    {
+        if (\count($this->admissionRejections) >= self::MAXIMUM_ADMISSION_REJECTION_EVENTS) {
+            if ($this->droppedAdmissionRejectionCount < PHP_INT_MAX) {
+                ++$this->droppedAdmissionRejectionCount;
+            }
+
+            return;
+        }
+
+        $this->admissionRejections[] = new EndpointAdmissionRejectedEvent($remoteAddress, $remotePort);
     }
 
     private function appendHandshakeDiagnosticFor(
